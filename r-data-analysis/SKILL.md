@@ -95,3 +95,25 @@ When starting to work on a new R project or codebase, follow these bootstrapping
 3. **Resolve Package Dependencies**: Check the project's dependencies and install any missing packages using `pak` (or `install.packages()` fallback) immediately.
 4. **Boot Up Session Adapters**: Run the S4 serialization registration script at the beginning of the first R evaluation chunk to ensure any plot outputs or system warnings do not break JSON communication with the MCP server.
 
+## 8. MCP Server Configuration (.json)
+To configure and start the R-based MCP server in client applications (such as Claude Desktop or Antigravity's MCP configuration), declare the server in your client's settings JSON file (e.g. `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "r-btw": {
+      "command": "Rscript",
+      "args": [
+        "-e",
+        "btw::btw_mcp_server(tools = btw::btw_tools('cran', 'docs', 'env', 'run', 'sessioninfo'))"
+      ]
+    }
+  }
+}
+```
+
+* **Command**: Runs `Rscript` with arguments to start the server.
+* **Execution**: Executing `btw::btw_mcp_server(...)` starts the R tool suite. We recommend passing `btw::btw_tools('cran', 'docs', 'env', 'run', 'sessioninfo')` to expose just the data analysis tools and avoid redundancy with native file/git tools. Use `mcptools::mcp_server()` for the barebones low-level MCP server.
+* **Path Requirements**: Ensure `Rscript` is available in your system's path environment variables.
+
+
