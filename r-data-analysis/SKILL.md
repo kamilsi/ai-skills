@@ -87,3 +87,11 @@ Proofreading the raw `.Rmd` file is prone to errors since R code chunks are not 
 3. **Verify inline variables**: Check that inline R expressions (e.g., `` `r round(var, 2)` ``) rendered with actual calculated values rather than NA or errors.
 4. **Locate plot outputs**: Verify that figures and charts are correctly generated and referenced in the markdown text.
 5. **Avoid Hardcoded Metrics**: Always use inline R expressions (e.g., `` `r round(coef(model)[2], 2)` ``) for reporting coefficients, statistics, and conversions in text descriptions or policy recommendations. Hardcoding numbers leads to maintenance issues and inconsistencies if model formulas or source datasets are updated.
+
+## 7. Project Bootstrapping & Context Configuration
+When starting to work on a new R project or codebase, follow these bootstrapping steps:
+1. **Initialize Project Context**: Call `btw::use_btw_md(scope = "project")` to generate a `btw.md` file in the project root. This file controls which tools are exposed and defines specific coding styles (e.g., using `<-` for assignment, `|>` for pipes, and preference for tidyverse packages).
+2. **Expose Custom Tools**: You can edit `btw.md` to add or remove exposed tool categories (e.g., `files`, `git`, `docs`, `session`, `web`).
+3. **Resolve Package Dependencies**: Check the project's dependencies and install any missing packages using `pak` (or `install.packages()` fallback) immediately.
+4. **Boot Up Session Adapters**: Run the S4 serialization registration script at the beginning of the first R evaluation chunk to ensure any plot outputs or system warnings do not break JSON communication with the MCP server.
+
