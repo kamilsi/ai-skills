@@ -135,4 +135,5 @@ source(tmp_r, local = FALSE)
 2. **Implicit Returns**: Make the last expression in your R snippet the object you want returned (e.g. `tibble`, `summary_df`, `model_fit`). Avoid excessive `cat()` or `print()` calls unless needed for formatting.
 3. **Keep Tool Calls Concise**: Leverage existing session objects rather than re-importing libraries or re-fetching raw data in every snippet.
 4. **Render Rmd Reports Cleanly**: When compiling `.Rmd` files, use `rmarkdown::render()` or run the report compiler script, and use `btw_tool_run_r` to examine any underlying data shifts.
+5. **No Custom HTML inside Markdown/Rmd**: Never embed raw HTML tags (e.g., `<div>`, `<span>`, class styles) in reports. Standard Pandoc markdown compilers and local previewers often strip or mangle mixed HTML blocks. Always use standard Markdown structure (tables, blockquotes, bullet points, headers) and native R functions (like `knitr::kable()`) to format text, data summaries, and quick stats.
 
