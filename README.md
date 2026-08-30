@@ -13,6 +13,7 @@ mkdir -p ~/.gemini && ln -sfn ~/Code/ai-skills ~/.gemini/skills
 ## Skills Catalog
 
 - **[`macos-reminders`](./macos-reminders/SKILL.md)** (*macOS*): Apple Reminders automation via EventKit Swift CLI (`remindctl`) & AppleScript fallback.
+- **[`moonshine-game-streaming`](./moonshine-game-streaming/SKILL.md)** (*Linux / RTX 4060*): Administration, monitoring, configuration, and troubleshooting for Moonshine headless GameStream server on `odyseusz` (Ubuntu 26.04 Wayland, HDR, 4K).
 - **[`r-data-analysis`](./r-data-analysis/SKILL.md)** (*Universal*): Interactive data analysis, GLMM/survival modeling, SQLite querying, and `.Rmd` workflows via persistent `r-btw` MCP session.
 
 ## Non-Obvious Behaviors
