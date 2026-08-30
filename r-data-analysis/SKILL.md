@@ -30,16 +30,22 @@ Unlike one-off shell commands (`run_command` with `Rscript -e` or `python3`) whe
 
 Invoke these tools using `call_mcp_tool` with `ServerName: "r-btw"`:
 
-| Tool Name | Purpose |
-| :--- | :--- |
-| **`btw_tool_run_r`** | Execute R code in the persistent session. Captures outputs, data frames, model summaries, and figures. |
-| **`btw_tool_docs_help_page`** | Pull complete R function documentation, parameter specs, and examples on the fly. |
-| **`btw_tool_docs_package_help_topics`** | List all available functions and help topics exported by an installed package. |
-| **`btw_tool_docs_vignette`** | Read package tutorials and vignettes directly in markdown format. |
-| **`btw_tool_env_describe_environment`** | List all loaded objects, variables, and models currently residing in the active R session. |
-| **`btw_tool_env_describe_data_frame`** | Inspect column types, missing values, and summary stats for a specific data frame. |
-| **`btw_tool_sessioninfo_package`** | Check package versions and dependencies. |
-| **`list_r_sessions` / `select_r_session`** | View or switch between active R sessions. |
+| Tool Name | Tool Group | Purpose |
+| :--- | :--- | :--- |
+| **`btw_tool_run_r`** | `run` | Execute R code in the persistent session. Captures outputs, data frames, model summaries, and rendered inline figures. |
+| **`btw_tool_env_describe_environment`** | `env` | List all loaded objects, variables, models, and dimensions currently in the active R session. |
+| **`btw_tool_env_describe_data_frame`** | `env` | Inspect column types, missing value counts, and summary distributions for a specific data frame. |
+| **`btw_tool_docs_help_page`** | `docs` | Pull complete function documentation, parameter signatures, and examples in token-efficient Markdown format. |
+| **`btw_tool_docs_package_help_topics`**| `docs` | List all exported functions and help topics available in an installed package. |
+| **`btw_tool_docs_available_vignettes`** | `docs` | List all vignettes and tutorials bundled with an installed package. |
+| **`btw_tool_docs_vignette`** | `docs` | Read package tutorials and vignettes directly in Markdown format. |
+| **`btw_tool_docs_package_news`** | `docs` | Inspect package release notes and changelog (`NEWS.md`). |
+| **`btw_tool_cran_search`** | `cran` | Search CRAN for packages matching keywords or task descriptions. |
+| **`btw_tool_cran_package`** | `cran` | Inspect CRAN package metadata, dependencies, and descriptions. |
+| **`btw_tool_sessioninfo_package`** | `sessioninfo` | Check installed package versions and dependency trees. |
+| **`btw_tool_sessioninfo_platform`** | `sessioninfo` | Inspect R version, OS architecture, and platform configuration. |
+| **`btw_tool_sessioninfo_is_package_installed`** | `sessioninfo` | Rapidly check if specific packages are installed. |
+| **`list_r_sessions` / `select_r_session`** | `session` | Discover active R sessions (auto-matched by project directory) or switch between multiple sessions. |
 
 ---
 
@@ -134,6 +140,8 @@ source(tmp_r, local = FALSE)
 1. **Work Incrementally**: Perform one clear analytical step per tool call.
 2. **Implicit Returns**: Make the last expression in your R snippet the object you want returned (e.g. `tibble`, `summary_df`, `model_fit`). Avoid excessive `cat()` or `print()` calls unless needed for formatting.
 3. **Keep Tool Calls Concise**: Leverage existing session objects rather than re-importing libraries or re-fetching raw data in every snippet.
-4. **Render Rmd Reports Cleanly**: When compiling `.Rmd` files, use `rmarkdown::render()` or run the report compiler script, and use `btw_tool_run_r` to examine any underlying data shifts.
-5. **No Custom HTML inside Markdown/Rmd**: Never embed raw HTML tags (e.g., `<div>`, `<span>`, class styles) in reports. Standard Pandoc markdown compilers and local previewers often strip or mangle mixed HTML blocks. Always use standard Markdown structure (tables, blockquotes, bullet points, headers) and native R functions (like `knitr::kable()`) to format text, data summaries, and quick stats.
+4. **Visualizations**: Create at most one rendered figure per tool call. `btw_tool_run_r` and `mcptools` capture ggplot2 / base plots and return them inline.
+5. **Error Handling**: Read error messages carefully; never loop more than twice to fix an error without stepping back and inspecting data structures with `str()` or `btw_tool_env_describe_data_frame`.
+6. **Render Rmd Reports Cleanly**: When compiling `.Rmd` files, use `rmarkdown::render()` or run the report compiler script, and use `btw_tool_run_r` to examine any underlying data shifts.
+7. **No Custom HTML inside Markdown/Rmd**: Never embed raw HTML tags (e.g., `<div>`, `<span>`, class styles) in reports. Standard Pandoc markdown compilers and local previewers often strip or mangle mixed HTML blocks. Always use standard Markdown structure (tables, blockquotes, bullet points, headers) and native R functions (like `knitr::kable()`) to format text, data summaries, and quick stats.
 
