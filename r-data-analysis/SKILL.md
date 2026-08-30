@@ -14,6 +14,46 @@ Use this skill whenever you need to explore data, query SQLite databases, fit st
 
 ---
 
+## 🛠️ Cold Start: Installation & MCP Setup
+
+If the `r-btw` MCP server is not yet configured or installed in the target environment, follow these bootstrap steps:
+
+### 1. Prerequisites
+* **R (>= 4.2.0)**: Installed via Homebrew (`brew install r`) or CRAN.
+* **Rust compiler (`rustc`)**: Required to compile the `yaml12` dependency (`brew install rust` on macOS / `apt-get install rustc` on Linux).
+
+### 2. Install Packages via `pak`
+Run this fast one-liner to install `btw` and its full dependency tree:
+```r
+if (!requireNamespace("pak", quietly = TRUE)) install.packages("pak", repos = "https://cloud.r-project.org")
+pak::pkg_install(c("posit-dev/btw", "gh"))
+```
+
+### 3. Register `r-btw` in MCP Config
+Add the server definition to your MCP configuration file (e.g. `~/.gemini/config/mcp_config.json`, `~/.gemini/antigravity-cli/mcp_config.json`, or `.vscode/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "r-btw": {
+      "command": "/opt/homebrew/bin/Rscript",
+      "args": [
+        "-e",
+        "btw::btw_mcp_server()"
+      ]
+    }
+  }
+}
+```
+
+### 4. Verify Cold-Start Health
+Test the server with a quick JSON-RPC handshake check:
+```bash
+printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}\n' | Rscript -e 'btw::btw_mcp_server()'
+```
+
+---
+
 ## ⚡ The Power of the Stateful R MCP Session (`r-btw`)
 
 Unlike one-off shell commands (`run_command` with `Rscript -e` or `python3`) where every invocation starts a cold process, re-parses libraries, and reloads data from disk, **the `r-btw` MCP server keeps the R session alive in memory across tool calls**.
