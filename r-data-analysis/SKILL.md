@@ -14,6 +14,17 @@ Use this skill whenever you need to explore data, query SQLite databases, fit st
 
 ---
 
+## ⚠️ Critical Core Prerequisite: R Code Execution (`btw_tool_run_r`)
+
+> [!IMPORTANT]
+> **Code execution is the primary capability of this skill.** Without `btw_tool_run_r`, the skill is limited to passive documentation lookup and cannot execute exploratory data analysis, fit statistical models, run queries, or render plots.
+>
+> By default, `posit-dev/btw` **disables arbitrary code execution (`run_r`) out-of-the-box for security reasons**.
+>
+> **During installation / cold-start setup**: You **MUST explicitly ask the user** for confirmation to enable interactive R code execution (`BTW_RUN_R_ENABLED=true`), explaining that this allows the agent to execute R scripts and models directly in their local environment.
+
+---
+
 ## 🛠️ Cold Start: Installation & MCP Setup
 
 If the `r-btw` MCP server is not yet configured or installed in the target environment, follow these bootstrap steps:
@@ -29,7 +40,12 @@ if (!requireNamespace("pak", quietly = TRUE)) install.packages("pak", repos = "h
 pak::pkg_install(c("posit-dev/btw", "gh"))
 ```
 
-### 3. Register `r-btw` in MCP Config
+### 3. Ask User & Enable Code Execution (`BTW_RUN_R_ENABLED`)
+Before registering the MCP server, confirm with the user:
+> *"Would you like to enable live R code execution (`btw_tool_run_r`) for the `r-btw` MCP server? This enables interactive data modeling, analysis, and plotting directly in your R session."*
+
+Once approved, configure the MCP server with the `BTW_RUN_R_ENABLED` environment variable:
+
 Add the server definition to your MCP configuration file (e.g. `~/.gemini/config/mcp_config.json`, `~/.gemini/antigravity-cli/mcp_config.json`, or `.vscode/mcp.json`):
 
 ```json
@@ -40,16 +56,24 @@ Add the server definition to your MCP configuration file (e.g. `~/.gemini/config
       "args": [
         "-e",
         "btw::btw_mcp_server()"
-      ]
+      ],
+      "env": {
+        "BTW_RUN_R_ENABLED": "true"
+      }
     }
   }
 }
 ```
 
+*Alternative activation methods:*
+* **`~/.Renviron`**: Add `BTW_RUN_R_ENABLED=true`
+* **`~/.Rprofile`**: Add `options(btw.run_r.enabled = TRUE)`
+* **Project `btw.md` context file**: Add `options: run_r: enabled: true`
+
 ### 4. Verify Cold-Start Health
-Test the server with a quick JSON-RPC handshake check:
+Test the server with a quick JSON-RPC handshake check and verify `btw_tool_run_r` is registered:
 ```bash
-printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}\n' | Rscript -e 'btw::btw_mcp_server()'
+printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}\n' | BTW_RUN_R_ENABLED=true Rscript -e 'btw::btw_mcp_server()'
 ```
 
 ---
