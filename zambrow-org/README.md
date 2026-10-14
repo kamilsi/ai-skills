@@ -36,16 +36,15 @@ Skill występuje w dwóch wersjach dopasowanych do środowiska wykonawczego:
 ---
 
 ### 2. Wersja webowa (dla Gemini Apps / gemini.google.com GUI)
-- **Lokalizacja:** `web/zambrow-org/` (oraz spakowane archiwum `web/zambrow-org.zip`).
+- **Lokalizacja:** `web/` (oraz spakowane archiwum `web/zambrow-org.zip`).
 - **Działanie:** Oparta na instrukcjach dla modelu i wbudowanym Google Search Grounding (`site:zambrow.org`, `site:zambrowiacy.pl`, `site:kino.mokzambrow.pl`, `site:filmweb.pl`, `site:imdb.com`). Zgodna z oficjalną specyfikacją Google Agent Skills.
 - **Zawartość paczki:**
   ```text
   zambrow-org.zip
-  └── zambrow-org/
-      ├── SKILL.md
-      └── references/
-          ├── kategorie_portali.md
-          └── instytucje_i_kontakty.md
+  ├── SKILL.md
+  └── references/
+      ├── kategorie_portali.md
+      └── instytucje_i_kontakty.md
   ```
 
 ---
@@ -60,14 +59,13 @@ Skill występuje w dwóch wersjach dopasowanych do środowiska wykonawczego:
 ### Instrukcja aktualizacji w Gemini Web GUI:
 1. Zbuduj lub zaktualizuj paczkę `zambrow-org.zip`:
    ```bash
-   cd ~/Code/ai-skills/zambrow-org/web && zip -r -X -FS zambrow-org.zip zambrow-org -x "*.DS_Store" -x "__MACOSX*"
+   cd ~/Code/ai-skills/zambrow-org/web && zip -r -X -FS zambrow-org.zip SKILL.md references/ -x "*.DS_Store" -x "__MACOSX*"
    ```
 2. Otwórz w przeglądarce [gemini.google.com](https://gemini.google.com) lub aplikację Gemini na macOS.
 3. W menu bocznym kliknij **Dostosuj (Customize)** -> na górze wybierz zakładkę **Umiejętności (Skills)**.
-4. Kliknij **Prześlij (Upload)**:
-   - Możesz wybrać spakowany plik `zambrow-org.zip`,
-   - Albo bezpośrednio folder `web/zambrow-org`,
-   - Albo sam plik `web/zambrow-org/SKILL.md`.
+4. Kliknij przycisk **Prześlij (Upload)**:
+   - Wybierz plik `zambrow-org.zip` (zawiera `SKILL.md` bezpośrednio w korzeniu),
+   - Albo bezpośrednio sam plik `web/SKILL.md`.
 5. Przejrzyj formularz i kliknij **Utwórz (Create)** (lub Zapisz zmiany).
 6. Upewnij się, że skill `zambrow-org` ma włączony suwak aktywności.
 7. W czacie możesz wywołać go wpisując `/zambrow-org` lub zadając naturalne pytanie (np. *„Co grają dzisiaj w kinie w Zambrowie i jakie filmy polecasz?”*).
@@ -76,7 +74,7 @@ Skill występuje w dwóch wersjach dopasowanych do środowiska wykonawczego:
 
 ## Wymogi specyfikacji Google Agent Skills (Gemini Apps)
 Zgodnie z oficjalną dokumentacją Google ([support.google.com/gemini/answer/17094296](https://support.google.com/gemini/answer/17094296)):
-1. **Nazewnictwo:** Nazwa w polu `name` musi składać się wyłącznie z małych liter i cyfr rozdzielonych pojedynczym łącznikiem (np. `zambrow-org`), o długości od 1 do 64 znaków.
-2. **Katalog nadrzędny:** Nazwa głównego folderu wewnątrz archiwum `.zip` **musi dokładnie odpowiadać nazwie w `name:`** (`zambrow-org/SKILL.md`).
-3. **Opis (description):** Zapisany w 3. osobie, zwięzły (do 1024 znaków), precyzujący co skill robi i kiedy ma zostać wywołany.
+1. **Nazewnictwo:** Nazwa w polu `name` musi być w formacie kebab-case (małe litery rozdzielone łącznikiem, np. `zambrow-org`).
+2. **Lokalizacja pliku:** Plik `SKILL.md` **musi znajdować się w folderze głównym** (w korzeniu archiwum ZIP, a nie w podfolderze).
+3. **Opis (description):** Zapisany w 3. osobie w cudzysłowie (do 1024 znaków), precyzujący co skill robi i kiedy ma zostać wywołany.
 4. **Bezpieczeństwo i pliki binarne:** Brak skryptów wykonujących zewnętrzne żądania sieciowe (wersja webowa opiera się na Google Search Grounding). Archiwum `.zip` nie może zawierać ukrytych plików binarnych takich jak `.DS_Store` czy `__MACOSX`.
