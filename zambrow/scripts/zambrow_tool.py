@@ -27,7 +27,13 @@ BASE_URL = "https://zambrow.org"
 ZAMBROWIACY_BASE_URL = "https://zambrowiacy.pl"
 KINO_BASE_URL = "https://kino.mokzambrow.pl"
 KINO_BOOKING_URL = "https://bilety-mokzambrow.eurobilet.pl/MSI/mvc/pl#new_tab"
+EVENTS_URL = f"{BASE_URL}/wydarzenia-imprezy"
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+
+MONTH_MAP = {
+    "sty": 1, "lut": 2, "mar": 3, "kwi": 4, "maj": 5, "cze": 6,
+    "lip": 7, "sie": 8, "wrz": 9, "paź": 10, "paz": 10, "lis": 11, "gru": 12
+}
 
 POLISH_WEEKDAYS = {
     0: "poniedziałek",
@@ -177,12 +183,13 @@ def search_portal(query: str, section: Optional[str] = None, source: str = "all"
       - 'commercial': Firmy (zambrow.org)
       - 'news': Wiadomości (zambrow.org & zambrowiacy.pl)
       - 'cinema' / 'kino': Repertuar kina, filmy, zapowiedzi (kino.mokzambrow.pl)
+      - 'events' / 'imprezy': Kalendarz imprez i wydarzeń kulturalnych (zambrow.org)
     """
     results = []
     
     # 1. zambrow.org
     if source in ("all", "zambrow-org"):
-        if not section or section not in ("cinema", "kino", "filmy"):
+        if not section or section not in ("cinema", "kino", "filmy", "events", "imprezy", "wydarzenia"):
             url = f"{BASE_URL}/szukaj?q={urllib.parse.quote(query)}"
             if section and section != "all":
                 sec_map = {
@@ -299,6 +306,27 @@ def search_portal(query: str, section: Optional[str] = None, source: str = "all"
         except Exception:
             pass
             
+    # 4. Events / Imprezy (zambrow.org/wydarzenia-imprezy)
+    if source in ("all", "zambrow-org") and (not section or section in ("all", "events", "imprezy", "wydarzenia")):
+        try:
+            evs = scrape_events()
+            q_lower = query.strip().lower()
+            for ev in evs:
+                target_str = (ev.get("title", "") + " " + ev.get("location", "") + " " + ev.get("description", "") + " " + ev.get("category", "")).lower()
+                if q_lower in target_str or not q_lower or section in ("events", "imprezy", "wydarzenia"):
+                    results.append({
+                        "source": "zambrow.org",
+                        "section": "Wydarzenia i Imprezy",
+                        "type": "event",
+                        "title": f"📅 {ev['date']} | {ev['title']} ({ev['category']})",
+                        "url": ev["url"],
+                        "info": f"Czas: {ev.get('time', '')} | Miejsce: {ev.get('location', '')}",
+                        "snippet": ev.get("description", "")[:250],
+                        "lead": ev.get("description", "")
+                    })
+        except Exception:
+            pass
+
     return results
 
 def extract_phones(text: str) -> List[str]:
@@ -986,11 +1014,19 @@ def parse_kino_page(url: str, content: str) -> Dict[str, Any]:
     }
 
 def get_page_details(url: str) -> Dict[str, Any]:
-    """Extracts structured details from a forum post, classified ad, company page, news article, or cinema page."""
+    """Extracts structured details from a forum post, classified ad, company page, news article, cinema page, or events calendar."""
     content = fetch_url(url)
     
     if "kino.mokzambrow.pl" in url:
         return parse_kino_page(url, content)
+    elif "wydarzenia-imprezy" in url or "/imprezy" in url:
+        return {
+            "source": "zambrow.org",
+            "type": "events_calendar",
+            "title": "Kalendarium wydarzeń i imprez w Zambrowie i okolicach",
+            "url": url,
+            "events": scrape_events()
+        }
     elif "zambrowiacy.pl" in url:
         return parse_zambrowiacy_page(url, content)
     elif "/post/" in url:
@@ -1042,6 +1078,156 @@ def parse_date(date_str: str) -> Optional[datetime.datetime]:
     except Exception:
         pass
     return None
+
+def scrape_events(
+    days: Optional[int] = None,
+    month: Optional[int] = None,
+    with_details: bool = False
+) -> List[Dict[str, Any]]:
+    """
+    Scrapes upcoming municipal and regional events from zambrow.org/wydarzenia-imprezy.
+    Returns list of dicts:
+      - title
+      - date (YYYY-MM-DD)
+      - badge (e.g. 'PAŹ 15')
+      - time (e.g. '17:00')
+      - location (e.g. 'Centrum Kultury Gminy Zambrów')
+      - category (e.g. 'Koncert / Muzyka', 'Warsztaty / Edukacja', 'Wystawa / Wernisaż')
+      - description (snippet)
+      - url (link to full article / event details)
+      - image (thumbnail url)
+      - days_away (number of days relative to today)
+      - phones / emails / full_body (if with_details is True)
+    """
+    content = fetch_url(EVENTS_URL)
+    items = re.findall(r"<div class=[\x27\x22]calendar[\x27\x22]>(.*?)</div>\s*</div>\s*</li>", content, re.DOTALL)
+    
+    events = []
+    now = datetime.datetime.now()
+    today = now.date()
+    
+    for it in items:
+        # 1. Parse date badge
+        m_sheet = re.search(r"<div class=[\x27\x22]calendar__sheet[\x27\x22][^>]*>(.*?)</div>", it, re.DOTALL)
+        date_iso = ""
+        badge_text = ""
+        ev_date = None
+        if m_sheet:
+            raw_sheet = m_sheet.group(1)
+            m_parts = re.search(r"([A-Za-zŻŁĆĄĘÓŃŚŹżłćąęóńśź]+).*?>(\d+)<", raw_sheet)
+            if m_parts:
+                m_code = m_parts.group(1).strip().lower()[:3]
+                day_num = int(m_parts.group(2))
+                m_idx = MONTH_MAP.get(m_code, now.month)
+                year = now.year
+                if m_idx < now.month - 1:
+                    year += 1
+                try:
+                    ev_date = datetime.date(year, m_idx, day_num)
+                    date_iso = ev_date.strftime("%Y-%m-%d")
+                except ValueError:
+                    date_iso = f"{year:04d}-{m_idx:02d}-{day_num:02d}"
+                badge_text = f"{m_parts.group(1).strip()} {day_num}"
+                
+        # 2. Parse link
+        m_link = re.search(r"<a href=[\x27\x22]([^\x27\x22]+)[\x27\x22][^>]*class=[\x27\x22]card__link[\x27\x22][^>]*>(.*?)</a>", it, re.DOTALL)
+        href = urllib.parse.urljoin(BASE_URL, m_link.group(1).strip()) if m_link else ""
+        
+        # 3. Parse title
+        m_name = re.search(r"<h4 class=[\x27\x22]calendar__event-name[\x27\x22][^>]*>(.*?)</h4>", it, re.DOTALL)
+        name = clean_html_text(m_name.group(1)) if m_name else ""
+        
+        # 4. Parse time & location
+        m_data = re.search(r"<span class=[\x27\x22]calendar__event-data[\x27\x22][^>]*>(.*?)</span>", it, re.DOTALL)
+        event_data = clean_html_text(m_data.group(1)) if m_data else ""
+        
+        time_str = ""
+        place_str = ""
+        if "Godzina:" in event_data:
+            parts = event_data.split("/")
+            for p in parts:
+                p = p.strip()
+                if p.startswith("Godzina:"):
+                    time_str = p.replace("Godzina:", "").strip()
+                elif p.startswith("Miejsce:"):
+                    place_str = p.replace("Miejsce:", "").strip()
+                else:
+                    if not place_str and p:
+                        place_str = p
+        elif event_data:
+            place_str = event_data
+
+        # 5. Parse description
+        m_descr = re.search(r"<p class=[\x27\x22]calendar__descr[\x27\x22][^>]*>(.*?)</p>", it, re.DOTALL)
+        descr = clean_html_text(m_descr.group(1)) if m_descr else ""
+        
+        # 6. Parse image
+        m_img = re.search(r"<img[^>]*src=[\x27\x22]([^\x27\x22]+)[\x27\x22]", it, re.DOTALL)
+        img_url = urllib.parse.urljoin(BASE_URL, m_img.group(1).strip()) if m_img else ""
+        
+        # 7. Category classification
+        name_lower = name.lower()
+        descr_lower = descr.lower()
+        if "wernisaż" in name_lower or "wystaw" in name_lower or "malar" in name_lower:
+            cat = "Wystawa / Wernisaż"
+        elif "koncert" in name_lower or "recital" in name_lower or "chopin" in name_lower or "muzyk" in name_lower:
+            cat = "Koncert / Muzyka"
+        elif "spotka" in name_lower or "pisark" in name_lower or "autor" in name_lower or "książk" in name_lower:
+            cat = "Spotkanie autorskie"
+        elif "warsztat" in name_lower or "szkolenie" in name_lower or "kurs" in name_lower:
+            cat = "Warsztaty / Edukacja"
+        elif "mecz" in name_lower or "turniej" in name_lower or "sport" in name_lower or "bieg" in name_lower:
+            cat = "Sport"
+        elif "wernisaż" in descr_lower or "wystaw" in descr_lower:
+            cat = "Wystawa / Wernisaż"
+        elif "koncert" in descr_lower or "muzyk" in descr_lower:
+            cat = "Koncert / Muzyka"
+        elif "warsztat" in descr_lower or "szkolenie" in descr_lower:
+            cat = "Warsztaty / Edukacja"
+        else:
+            cat = "Wydarzenie kulturalne"
+
+        days_away = (ev_date - today).days if ev_date else None
+        
+        # Filters
+        if days is not None and days_away is not None:
+            if days_away < 0 or days_away > days:
+                continue
+                
+        if month is not None and ev_date is not None:
+            if ev_date.month != month:
+                continue
+
+        event_obj = {
+            "source": "zambrow.org",
+            "type": "event",
+            "title": name,
+            "date": date_iso,
+            "badge": badge_text,
+            "time": time_str,
+            "location": place_str,
+            "category": cat,
+            "description": descr,
+            "url": href,
+            "image": img_url,
+            "days_away": days_away
+        }
+        
+        if with_details and href:
+            try:
+                art = parse_news_article(href, fetch_url(href))
+                if art.get("body"):
+                    event_obj["full_body"] = art["body"]
+                if art.get("phones"):
+                    event_obj["phones"] = art["phones"]
+                if art.get("emails"):
+                    event_obj["emails"] = art["emails"]
+            except Exception:
+                pass
+                
+        events.append(event_obj)
+        
+    return events
 
 def scrape_zambrowiacy_news(
     days: int = 14,
@@ -1368,9 +1554,9 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
     
     # search
-    search_p = subparsers.add_parser("search", help="Search the portals (forum, adverts, firms, news, cinema)")
-    search_p.add_argument("query", help="Search term (e.g. kominiarz, elektryk, Lalka, kino)")
-    search_p.add_argument("-s", "--section", choices=["all", "forum", "adverts", "firms", "news", "cinema", "kino", "filmy"], default="all",
+    search_p = subparsers.add_parser("search", help="Search the portals (forum, adverts, firms, news, cinema, events)")
+    search_p.add_argument("query", help="Search term (e.g. kominiarz, elektryk, Lalka, kino, koncert)")
+    search_p.add_argument("-s", "--section", choices=["all", "forum", "adverts", "firms", "news", "cinema", "kino", "filmy", "events", "imprezy", "wydarzenia"], default="all",
                           help="Filter by section")
     search_p.add_argument("-S", "--source", choices=["all", "zambrow-org", "zambrowiacy", "cinema", "kino"], default="all",
                           help="Source portal: all (default), zambrow-org, zambrowiacy, or cinema/kino")
@@ -1378,9 +1564,22 @@ def main():
     search_p.add_argument("--json", action="store_true", help="Output raw JSON")
     
     # get
-    get_p = subparsers.add_parser("get", help="Fetch and parse details of a post, ad, company, or cinema movie")
-    get_p.add_argument("url", help="URL or path (e.g. /post/... or /oferta/... or https://kino.mokzambrow.pl/marsupilami/)")
+    get_p = subparsers.add_parser("get", help="Fetch and parse details of a post, ad, company, cinema movie, or events calendar")
+    get_p.add_argument("url", help="URL or path (e.g. /post/... or /oferta/... or https://kino.mokzambrow.pl/marsupilami/ or https://zambrow.org/wydarzenia-imprezy)")
     get_p.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # events / imprezy / wydarzenia
+    events_p = subparsers.add_parser("events", aliases=["imprezy", "wydarzenia"],
+                                     help="Kalendarz imprez i wydarzeń kulturalnych w Zambrowie i powiecie (zambrow.org/wydarzenia-imprezy)")
+    events_p.add_argument("-d", "--days", type=int, default=None,
+                          help="Pokaż wydarzenia na najbliższe N dni (np. --days 14)")
+    events_p.add_argument("-m", "--month", type=int, default=None,
+                          help="Filtruj wg numeru miesiąca (1-12)")
+    events_p.add_argument("-c", "--category", help="Filtruj wg kategorii (np. 'koncert', 'warsztaty', 'wystawa', 'spotkanie')")
+    events_p.add_argument("--details", action="store_true",
+                          help="Pobierz pełną treść artykułu i kontakty dla każdego wydarzenia")
+    events_p.add_argument("--json", action="store_true",
+                          help="Zwróć wynik w formacie JSON (dla Generative UI / widgetów)")
     
     # news
     news_p = subparsers.add_parser("news", help="Scrape latest news with headlines and leads from zambrow.org and/or zambrowiacy.pl")
@@ -1680,7 +1879,7 @@ def main():
                 print()
             
             print("💡 Aby pobrać pełną treść konkretnego artykułu, uruchom:")
-            print("   python3 ~/.gemini/skills/zambrow-org/scripts/zambrow_tool.py get \"<URL>\"\n")
+            print("   python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py get \"<URL>\"\n")
 
     elif args.command == "search":
         items = search_portal(args.query, args.section, args.source)
@@ -1820,8 +2019,68 @@ def main():
                     contact_str = f" [{'; '.join(contacts)}]" if contacts else ""
                     print(f"  [{i}] {c['author']} ({c['date']}){contact_str}:")
                     print(f"      {c['text']}")
+            if data.get("events"):
+                print(f"\n🎭 Zaplanowane wydarzenia ({len(data['events'])} pozycji):")
+                for ev in data["events"]:
+                    t_str = f" ⏰ {ev['time']}" if ev.get("time") else ""
+                    loc_str = f" 📍 {ev['location']}" if ev.get("location") else ""
+                    print(f"  • 📅 {ev['date']}{t_str} | {ev['title']} ({ev['category']}){loc_str}")
+                    print(f"    🔗 {ev['url']}")
             print()
             
+    elif args.command in ("events", "imprezy", "wydarzenia"):
+        evs = scrape_events(days=args.days, month=args.month, with_details=args.details)
+        if args.category:
+            cat_q = args.category.strip().lower()
+            evs = [e for e in evs if cat_q in e.get("category", "").lower() or cat_q in e.get("title", "").lower()]
+            
+        if args.json:
+            print(json.dumps(evs, indent=2, ensure_ascii=False))
+        else:
+            if not evs:
+                filter_desc = []
+                if args.days: filter_desc.append(f"w ciągu najbliższych {args.days} dni")
+                if args.month: filter_desc.append(f"w miesiącu {args.month}")
+                if args.category: filter_desc.append(f"w kategorii '{args.category}'")
+                desc_str = f" ({', '.join(filter_desc)})" if filter_desc else ""
+                print(f"Brak zaplanowanych wydarzeń{desc_str}.")
+                return
+                
+            print(f"\n🎭 Kalendarium Imprez i Wydarzeń w Zambrowie i powiecie ({len(evs)} pozycji):\n")
+            for i, ev in enumerate(evs, 1):
+                badge_str = f"[{ev['badge']}] " if ev.get("badge") else ""
+                days_away = ev.get("days_away")
+                if days_away is not None:
+                    if days_away == 0:
+                        rel_str = " (DZISIAJ!)"
+                    elif days_away == 1:
+                        rel_str = " (JUTRO)"
+                    elif days_away > 1:
+                        rel_str = f" (za {days_away} dni)"
+                    else:
+                        rel_str = ""
+                else:
+                    rel_str = ""
+                    
+                time_str = f" ⏰ {ev['time']}" if ev.get("time") else ""
+                loc_str = f" 📍 {ev['location']}" if ev.get("location") else ""
+                cat_str = f" [{ev.get('category')}]" if ev.get("category") else ""
+                
+                print(f"[{i}] 📅 {ev.get('date', 'Termin nieokreślony')}{rel_str} | {badge_str}{ev['title']}{cat_str}")
+                if time_str or loc_str:
+                    print(f"    {time_str.strip()}{loc_str}")
+                print(f"    🔗 URL: {ev['url']}")
+                if ev.get("description"):
+                    print(f"    📝 Opis: {ev['description']}")
+                if ev.get("full_body"):
+                    print(f"\n    📖 Pełny opis:\n{ev['full_body']}\n")
+                if ev.get("phones"):
+                    print(f"    📞 Tel: {', '.join(ev['phones'])}")
+                print()
+                
+            print("💡 Wygeneruj dane dla GUI / widgetu interaktywnego:")
+            print("   python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py events --json\n")
+
     elif args.command == "browse":
         items = browse_category(args.category)
         if args.json:
