@@ -1,0 +1,13 @@
+# Transient and sync directories
+synced/
+
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
