@@ -106,6 +106,12 @@ python3 ~/.gemini/skills/zambrow-org/scripts/zambrow_tool.py news --days 14 --no
 python3 ~/.gemini/skills/zambrow-org/scripts/zambrow_tool.py news --days 14 --json
 ```
 
+> [!TIP]
+> **Kros-walidacja gorących i kontrowersyjnych tematów na Forum (`forum`):**
+> W przypadku newsów politycznych, kontrowersyjnych interpelacji radnych (np. symbole w szkołach, spory w radzie miasta, inwestycje, szpital, lokalne podatki) **zawsze warto skros-walidować temat na forum mieszkańców `zambrow.org`** (`search "<temat/nazwisko>" --section forum` lub `browse "forum"`). Artykuły prasowe często prezentują jedynie oficjalne stanowiska lub autopromocję polityków, podczas gdy dyskusje na forum pozwalają poznać autentyczne nastroje mieszkańców, lokalny kontekst i zweryfikować, czy sprawa ma realne podłoże, czy to jedynie medialny teatr.
+
+
+
 ---
 
 ### 3. Searching the Portals (`search`)
