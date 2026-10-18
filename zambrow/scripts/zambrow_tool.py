@@ -10,12 +10,15 @@ Supports:
 """
 
 import sys
+import os
 import re
 import html
 import json
 import time
 import argparse
 import datetime
+import pathlib
+import hashlib
 import concurrent.futures
 import urllib.request
 import urllib.parse
@@ -28,6 +31,33 @@ ZAMBROWIACY_BASE_URL = "https://zambrowiacy.pl"
 KINO_BASE_URL = "https://kino.mokzambrow.pl"
 KINO_BOOKING_URL = "https://bilety-mokzambrow.eurobilet.pl/MSI/mvc/pl#new_tab"
 EVENTS_URL = f"{BASE_URL}/wydarzenia-imprezy"
+CACHE_DIR = pathlib.Path.home() / ".cache" / "zambrow"
+
+def get_cache(namespace: str, key: str, max_age_seconds: int = 3600) -> Optional[Any]:
+    """Retrieves cached JSON payload if present and not expired."""
+    try:
+        fpath = CACHE_DIR / namespace / (hashlib.sha256(key.encode("utf-8")).hexdigest() + ".json")
+        if not fpath.exists():
+            return None
+        if (time.time() - fpath.stat().st_mtime) > max_age_seconds:
+            return None
+        with open(fpath, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def set_cache(namespace: str, key: str, value: Any) -> None:
+    """Saves payload to disk cache safely."""
+    try:
+        ndir = CACHE_DIR / namespace
+        ndir.mkdir(parents=True, exist_ok=True)
+        fpath = ndir / (hashlib.sha256(key.encode("utf-8")).hexdigest() + ".json")
+        tmp_fpath = fpath.with_suffix(".tmp")
+        with open(tmp_fpath, "w", encoding="utf-8") as f:
+            json.dump(value, f, ensure_ascii=False)
+        tmp_fpath.replace(fpath)
+    except Exception:
+        pass
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
 MONTH_MAP = {
@@ -91,11 +121,16 @@ def fetch_url(url: str, timeout: int = 15, max_retries: int = 3) -> str:
     )
     return content
 
-def fetch_kino_json(endpoint: str, timeout: int = 15) -> Any:
-    """Fetches WordPress REST API JSON from kino.mokzambrow.pl."""
+def fetch_kino_json(endpoint: str, timeout: int = 15, max_age: int = 1800) -> Any:
+    """Fetches WordPress REST API JSON from kino.mokzambrow.pl with disk caching."""
+    cached = get_cache("kino_api", endpoint, max_age_seconds=max_age)
+    if cached is not None:
+        return cached
     url = f"{KINO_BASE_URL}/wp-json/wp/v2/{endpoint}"
     content = fetch_url(url, timeout=timeout)
-    return json.loads(content)
+    data = json.loads(content)
+    set_cache("kino_api", endpoint, data)
+    return data
 
 def get_cinema_info() -> Dict[str, Any]:
     """Returns cinema contacts, box office hours, and ticket prices."""
@@ -659,6 +694,11 @@ def fetch_movie_ratings(title: str, year: Optional[int] = None) -> Dict[str, Any
     clean_title = re.sub(r"\s*[-–—]\s*\d+$", "", title).strip()
     clean_title = re.sub(r"\s*\(\d{4}\)$", "", clean_title).strip()
     
+    cache_key = clean_title.lower()
+    cached = get_cache("ratings", cache_key, max_age_seconds=86400 * 3) # 3 days
+    if cached is not None:
+        return cached
+    
     # 1. Filmweb API
     try:
         q = urllib.parse.quote(clean_title)
@@ -727,6 +767,9 @@ def fetch_movie_ratings(title: str, year: Optional[int] = None) -> Dict[str, Any
                 }
     except Exception:
         pass
+
+    if result.get("filmweb") or result.get("imdb"):
+        set_cache("ratings", cache_key, result)
 
     return result
 
@@ -1015,12 +1058,18 @@ def parse_kino_page(url: str, content: str) -> Dict[str, Any]:
 
 def get_page_details(url: str) -> Dict[str, Any]:
     """Extracts structured details from a forum post, classified ad, company page, news article, cinema page, or events calendar."""
+    is_article = "/artykul/" in url or "/firma/" in url
+    if is_article:
+        cached = get_cache("pages", url, max_age_seconds=86400 * 7)
+        if cached is not None:
+            return cached
+
     content = fetch_url(url)
     
     if "kino.mokzambrow.pl" in url:
-        return parse_kino_page(url, content)
+        res = parse_kino_page(url, content)
     elif "wydarzenia-imprezy" in url or "/imprezy" in url:
-        return {
+        res = {
             "source": "zambrow.org",
             "type": "events_calendar",
             "title": "Kalendarium wydarzeń i imprez w Zambrowie i okolicach",
@@ -1028,25 +1077,29 @@ def get_page_details(url: str) -> Dict[str, Any]:
             "events": scrape_events()
         }
     elif "zambrowiacy.pl" in url:
-        return parse_zambrowiacy_page(url, content)
+        res = parse_zambrowiacy_page(url, content)
     elif "/post/" in url:
-        return parse_forum_post(url, content)
+        res = parse_forum_post(url, content)
     elif "/oferta/" in url or "/ogloszenie/" in url:
-        return parse_ad_offer(url, content)
+        res = parse_ad_offer(url, content)
     elif "/firma/" in url:
-        return parse_firm_page(url, content)
+        res = parse_firm_page(url, content)
     elif "/artykul/" in url:
-        return parse_news_article(url, content)
+        res = parse_news_article(url, content)
     else:
         title_m = re.search(r"<h1[^>]*>(.*?)</h1>", content, re.DOTALL)
         title = clean_html_text(title_m.group(1)) if title_m else ""
-        return {
+        res = {
             "type": "generic",
             "url": url,
             "title": title,
             "phones": extract_phones(content),
             "emails": extract_emails(content)
         }
+
+    if is_article and res:
+        set_cache("pages", url, res)
+    return res
 
 def parse_date(date_str: str) -> Optional[datetime.datetime]:
     """Parses ISO date string, YYYY/MM/DD, YYYY-MM-DD, or RFC 2822 (RSS) to UTC datetime."""
@@ -1334,7 +1387,7 @@ def scrape_zambrow_org_news(
     category: Optional[str] = None,
     with_lead: bool = True,
     with_full: bool = False,
-    workers: int = 4
+    workers: int = 8
 ) -> List[Dict[str, Any]]:
     """Crawls news from zambrow.org."""
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -1463,7 +1516,7 @@ def scrape_news(
     source: str = "all",
     with_lead: bool = True,
     with_full: bool = False,
-    workers: int = 4
+    workers: int = 8
 ) -> List[Dict[str, Any]]:
     """Crawls news from zambrow.org and/or zambrowiacy.pl."""
     results = []
