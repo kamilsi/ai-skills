@@ -121,6 +121,28 @@ def fetch_url(url: str, timeout: int = 15, max_retries: int = 3) -> str:
     )
     return content
 
+def download_images(image_urls: List[str], dest_dir: str, limit: int = 5) -> List[str]:
+    """Downloads up to limit images into dest_dir, returning list of saved file paths."""
+    out_dir = pathlib.Path(dest_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for idx, img_url in enumerate(image_urls[:limit], 1):
+        ext = ".jpg"
+        if ".png" in img_url.lower(): ext = ".png"
+        elif ".webp" in img_url.lower(): ext = ".webp"
+        fname = f"foto_{idx}{ext}"
+        target = out_dir / fname
+        try:
+            req = urllib.request.Request(img_url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read()
+            with open(target, "wb") as f:
+                f.write(data)
+            saved.append(str(target))
+        except Exception as e:
+            sys.stderr.write(f"Warning: failed to download {img_url}: {e}\n")
+    return saved
+
 def fetch_kino_json(endpoint: str, timeout: int = 15, max_age: int = 1800) -> Any:
     """Fetches WordPress REST API JSON from kino.mokzambrow.pl with disk caching."""
     cached = get_cache("kino_api", endpoint, max_age_seconds=max_age)
@@ -453,22 +475,67 @@ def parse_ad_offer(url: str, content: str) -> Dict[str, Any]:
     addr_m = re.search(r"<p class=[\x27\x22]announ__contact-data[\x27\x22][^>]*>(.*?)</p>", content, re.DOTALL)
     address = clean_html_text(addr_m.group(1)) if addr_m else ""
     
+    price = ""
+    price_tag_m = re.search(r"<span class=[\x27\x22]announ__price-tag[\x27\x22][^>]*>(.*?)</span>", content, re.DOTALL)
+    if price_tag_m:
+        price = clean_html_text(price_tag_m.group(1))
+    else:
+        price_m = re.search(r"<div class=[\x27\x22]announ__price[\x27\x22][^>]*>(.*?)</div>", content, re.DOTALL)
+        if price_m:
+            price = clean_html_text(price_m.group(1))
+
+    params = []
+    param_matches = re.findall(r"<div class=[\x27\x22]announ__parameter[^\x27\x22]*[\x27\x22][^>]*>(.*?)</div>", content, re.DOTALL)
+    for pm in param_matches:
+        p_clean = clean_html_text(pm)
+        if p_clean and p_clean not in params:
+            params.append(p_clean)
+
     desc = ""
-    scripts = re.findall(r"<script type=[\x27\x22]application/ld\+json[\x27\x22]>(.*?)</script>", content, re.DOTALL)
-    for s in scripts:
-        try:
-            d = json.loads(s.strip())
-            if "description" in d and d["description"]:
-                desc = d["description"]
-                break
-        except Exception:
-            pass
-            
+    descr_m = re.search(r"<div class=[\x27\x22]announ__descr[^\x27\x22]*[\x27\x22][^>]*>(.*?)(?:<div class=[\x27\x22]button-block|\Z)", content, re.DOTALL)
+    if descr_m:
+        raw_desc = descr_m.group(1)
+        raw_desc = re.sub(r"<div class=[\x27\x22]section__header[\x27\x22][^>]*>.*?</div>", "", raw_desc, flags=re.DOTALL)
+        raw_desc = re.sub(r"<br\s*/?>", "\n", raw_desc, flags=re.IGNORECASE)
+        raw_desc = re.sub(r"</p>", "\n\n", raw_desc, flags=re.IGNORECASE)
+        clean_desc = re.sub(r"<[^>]+>", " ", raw_desc)
+        clean_desc = html.unescape(clean_desc)
+        desc = "\n".join(" ".join(line.split()) for line in clean_desc.split("\n") if line.strip())
+
     if not desc:
         desc_m = re.search(r"<div class=[\x27\x22]announ__text[^\x27\x22]*[\x27\x22][^>]*>(.*?)</div>", content, re.DOTALL)
         if desc_m:
             desc = clean_html_text(desc_m.group(1))
-            
+
+    if not desc:
+        scripts = re.findall(r"<script type=[\x27\x22]application/ld\+json[\x27\x22]>(.*?)</script>", content, re.DOTALL)
+        for s in scripts:
+            try:
+                d = json.loads(s.strip())
+                if "description" in d and d["description"]:
+                    desc = d["description"]
+                    break
+            except Exception:
+                pass
+
+    photos = []
+    seen_photos = set()
+    photo_matches = re.findall(r"<img[^>]+src=[\x27\x22]([^\x27\x22]+)[\x27\x22][^>]*class=[\x27\x22][^\x27\x22]*announ__photo[^\x27\x22]*[\x27\x22]", content)
+    if not photo_matches:
+        photo_matches = re.findall(r"class=[\x27\x22][^\x27\x22]*announ__photo[^\x27\x22]*[\x27\x22][^>]*src=[\x27\x22]([^\x27\x22]+)[\x27\x22]", content)
+    if not photo_matches:
+        photo_matches = re.findall(r"<img[^>]+src=[\x27\x22](/static/files/ogloszenia/[^\x27\x22]+)[\x27\x22]", content)
+
+    for p in photo_matches:
+        p_clean = p.replace("/./", "/")
+        if not p_clean.startswith("http"):
+            p_full = urllib.parse.urljoin(BASE_URL, p_clean)
+        else:
+            p_full = p_clean
+        if p_full not in seen_photos:
+            seen_photos.add(p_full)
+            photos.append(p_full)
+
     return {
         "type": "ad",
         "title": title,
@@ -476,8 +543,11 @@ def parse_ad_offer(url: str, content: str) -> Dict[str, Any]:
         "email": email,
         "date": date_val,
         "id": id_val,
+        "price": price,
+        "parameters": params,
         "address": address,
         "description": desc,
+        "photos": photos,
         "url": url
     }
 
@@ -1550,7 +1620,7 @@ def scrape_news(
     return results[:limit]
 
 def browse_category(path: str) -> List[Dict[str, Any]]:
-    """Browses a section URL on zambrow.org."""
+    """Browses a section URL on zambrow.org (classifieds, forum, firms)."""
     if not path.startswith("http"):
         path = path.lstrip("/")
         url = f"{BASE_URL}/{path}"
@@ -1561,11 +1631,89 @@ def browse_category(path: str) -> List[Dict[str, Any]]:
     results = []
     seen = set()
     
+    # 1. Structured classified items (li.classified__item)
+    classified_blocks = re.findall(r"<li class=[\x27\x22][^\x27\x22]*classified__item[^\x27\x22]*[\x27\x22][^>]*>(.*?)</li>", content, re.DOTALL)
+    for block in classified_blocks:
+        url_m = re.search(r"href=[\x27\x22](/oferta/[^\x27\x22]+)[\x27\x22]", block)
+        if not url_m:
+            url_m = re.search(r"itemprop=[\x27\x22]url[\x27\x22]\s+content=[\x27\x22]([^\x27\x22]+)[\x27\x22]", block)
+        if not url_m: continue
+        item_url = url_m.group(1)
+        if not item_url.startswith("http"): item_url = urllib.parse.urljoin(BASE_URL, item_url)
+        if item_url in seen: continue
+        seen.add(item_url)
+        
+        title = ""
+        title_m = re.search(r"<h3 class=[\x27\x22]classified__title[\x27\x22][^>]*>(.*?)</h3>", block, re.DOTALL)
+        if title_m:
+            title = clean_html_text(title_m.group(1))
+        else:
+            title_attr = re.search(r"title=[\x27\x22]([^\x27\x22]+)[\x27\x22]", block)
+            if title_attr:
+                title = clean_html_text(title_attr.group(1).split(" | Zambrow.org")[0].split(" - ogłoszenia")[0])
+        if not title:
+            slug = item_url.split("/")[-1]
+            title = re.sub(r"-m\d+$", "", slug).replace("-", " ").capitalize()
+
+        price = ""
+        price_m = re.search(r"<div class=[\x27\x22]classified__price[\x27\x22][^>]*>(.*?)</div>", block, re.DOTALL)
+        if price_m:
+            price = clean_html_text(price_m.group(1))
+            
+        filters = [clean_html_text(f).strip(" |") for f in re.findall(r"<span class=[\x27\x22]classified__filter[\x27\x22][^>]*>(.*?)</span>", block, re.DOTALL)]
+        filters = [f for f in filters if f]
+        
+        thumb_m = re.search(r"<img[^>]+src=[\x27\x22]([^\x27\x22]+)[\x27\x22]", block)
+        thumb = thumb_m.group(1) if thumb_m else ""
+        if thumb and not thumb.startswith("http"):
+            thumb = urllib.parse.urljoin(BASE_URL, thumb.replace("/./", "/"))
+            
+        results.append({
+            "title": title,
+            "url": item_url,
+            "price": price,
+            "tags": filters,
+            "thumbnail": thumb,
+            "type": "ad"
+        })
+
+    # 2. Structured forum entries (li.forum__entry)
+    forum_blocks = re.findall(r"<li class=[\x27\x22]forum__entry[\x27\x22][^>]*>(.*?)</li>", content, re.DOTALL)
+    for row in forum_blocks:
+        link_m = re.search(r"<a href=[\x27\x22](/post/[^\x27\x22]+)[\x27\x22][^>]*>(.*?)</a>", row, re.DOTALL)
+        if not link_m: continue
+        t_url = urllib.parse.urljoin(BASE_URL, link_m.group(1))
+        if t_url in seen: continue
+        seen.add(t_url)
+        t_title = clean_html_text(link_m.group(2))
+        
+        meta_m = re.search(r"<span>(\d{2}/\d{2}/\d{4}),\s*autor:\s*([^<]+)</span>", row)
+        date_str = meta_m.group(1) if meta_m else ""
+        author_str = meta_m.group(2).strip() if meta_m else ""
+        
+        reply_m = re.search(r"<div class=[\x27\x22]forum__entry-reply[\x27\x22][^>]*>\s*([0-9-:\s]+)<br\s*/?>\s*([^<]+)</div>", row)
+        last_reply_date = reply_m.group(1).strip() if reply_m else ""
+        last_reply_user = reply_m.group(2).strip() if reply_m else ""
+        
+        comm_m = re.search(r"<div class=[\x27\x22]forum__entry-comments[\x27\x22][^>]*>.*?(\d+)\s*</div>", row, re.DOTALL)
+        comments_count = int(comm_m.group(1)) if comm_m else 0
+        
+        results.append({
+            "title": t_title,
+            "url": t_url,
+            "date": date_str,
+            "author": author_str,
+            "last_reply": f"{last_reply_date} ({last_reply_user})" if last_reply_date else "",
+            "comments_count": comments_count,
+            "type": "forum"
+        })
+
+    # 3. Fallback for offers not in classified__item
     offers = re.findall(r"<a href=[\x27\x22](/oferta/[^\x27\x22]+)[\x27\x22]", content)
     for o in offers:
-        if o in seen: continue
-        seen.add(o)
         full_url = urllib.parse.urljoin(BASE_URL, o)
+        if full_url in seen: continue
+        seen.add(full_url)
         slug = o.split("/")[-1]
         title_slug = re.sub(r"-m\d+$", "", slug).replace("-", " ").capitalize()
         results.append({
@@ -1574,11 +1722,12 @@ def browse_category(path: str) -> List[Dict[str, Any]]:
             "type": "ad"
         })
         
+    # 4. Companies (/firma/...)
     firms = re.findall(r"<a href=[\x27\x22](/firma/[^\x27\x22]+)[\x27\x22]", content)
     for f in firms:
-        if f in seen: continue
-        seen.add(f)
         full_url = urllib.parse.urljoin(BASE_URL, f)
+        if full_url in seen: continue
+        seen.add(full_url)
         slug = f.split("/")[-1]
         title_slug = re.sub(r"-m?\d+$", "", slug).replace("-", " ").capitalize()
         results.append({
@@ -1587,11 +1736,12 @@ def browse_category(path: str) -> List[Dict[str, Any]]:
             "type": "firm"
         })
         
+    # 5. Forum threads fallback
     threads = re.findall(r"<a href=[\x27\x22](/post/[^\x27\x22]+)[\x27\x22]", content)
     for t in threads:
-        if t in seen: continue
-        seen.add(t)
         full_url = urllib.parse.urljoin(BASE_URL, t)
+        if full_url in seen: continue
+        seen.add(full_url)
         slug = t.split("/")[-1]
         title_slug = re.sub(r"-f\d+$", "", slug).replace("-", " ").capitalize()
         results.append({
@@ -1619,6 +1769,10 @@ def main():
     # get
     get_p = subparsers.add_parser("get", help="Fetch and parse details of a post, ad, company, cinema movie, or events calendar")
     get_p.add_argument("url", help="URL or path (e.g. /post/... or /oferta/... or https://kino.mokzambrow.pl/marsupilami/ or https://zambrow.org/wydarzenia-imprezy)")
+    get_p.add_argument("--download-images", dest="download_images_dir", default=None,
+                       help="Katalog docelowy do pobrania zdjęć oferty (np. --download-images ~/zambrow-vault/nieruchomosci/img/2586674)")
+    get_p.add_argument("--max-images", type=int, default=5,
+                       help="Maksymalna liczba zdjęć do pobrania (domyślnie 5)")
     get_p.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # events / imprezy / wydarzenia
@@ -1996,12 +2150,19 @@ def main():
                 
     elif args.command == "get":
         data = get_page_details(args.url)
+        if getattr(args, "download_images_dir", None) and data.get("photos"):
+            saved = download_images(data["photos"], args.download_images_dir, limit=args.max_images)
+            data["downloaded_images"] = saved
         if args.json:
             print(json.dumps(data, indent=2, ensure_ascii=False))
         else:
             print(f"\n📄 {data.get('title', 'Szczegóły strony')}")
             print(f"URL: {data.get('url')}")
             print(f"Typ: {data.get('type')}")
+            if data.get("price"):
+                print(f"💰 Cena: {data['price']}")
+            if data.get("parameters"):
+                print(f"🏷️ Parametry: {', '.join(data['parameters'])}")
             if data.get("date"):
                 print(f"📅 Data: {data['date']}")
             if data.get("author"):
@@ -2063,6 +2224,16 @@ def main():
                         print(f"    - {k.replace('_', ' ').capitalize()}: {v}")
             if data.get("description"):
                 print(f"\n📝 Opis:\n{data['description']}")
+            if data.get("photos"):
+                print(f"\n🖼️ Zdjęcia ({len(data['photos'])}):")
+                for ph in data["photos"][:5]:
+                    print(f"  • {ph}")
+                if len(data["photos"]) > 5:
+                    print(f"  ... (+ {len(data['photos']) - 5} kolejnych)")
+            if data.get("downloaded_images"):
+                print(f"\n📥 Zapisano zdjęcia lokalnie ({len(data['downloaded_images'])}):")
+                for d_img in data["downloaded_images"]:
+                    print(f"  • {d_img}")
             if data.get("comments"):
                 print(f"\n💬 Komentarze / Odpowiedzi ({len(data['comments'])}):")
                 for i, c in enumerate(data["comments"], 1):
@@ -2141,7 +2312,14 @@ def main():
         else:
             print(f"\n📂 Pozycje w kategorii '{args.category}' ({len(items)} pozycji):\n")
             for it in items:
-                print(f"• {it['title']} ({it['type']})")
+                price_str = f" [Cena: {it['price']}]" if it.get("price") else ""
+                tags_str = f" | {', '.join(it['tags'])}" if it.get("tags") else ""
+                author_str = f" | autor: {it['author']}" if it.get("author") else ""
+                date_str = f" ({it['date']})" if it.get("date") else ""
+                reply_str = f" | ost. odp: {it['last_reply']}" if it.get("last_reply") else ""
+                comm_str = f" [{it['comments_count']} odp.]" if it.get("comments_count") is not None and it["comments_count"] > 0 else ""
+                
+                print(f"•{price_str} {it['title']}{comm_str} ({it['type']}){tags_str}{author_str}{date_str}{reply_str}")
                 print(f"  {it['url']}")
             print()
 

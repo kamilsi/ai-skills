@@ -201,8 +201,11 @@ python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py get "https://zambrowiac
 # Forum thread on zambrow.org (author, replies, decoded contacts)
 python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py get "https://zambrow.org/post/kominiarz-f615014"
 
-# Classified ad on zambrow.org (unmasked phone, email, date, description)
+# Classified ad on zambrow.org (unmasked phone, email, date, price, parameters, description)
 python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py get "https://zambrow.org/oferta/elektryk-amperzloty-chlopak-m2465554"
+
+# Real estate offer with automatic image downloading for visual classification
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py get "https://zambrow.org/oferta/dom-20856m2budynek-gospodarczy-13060m-m2586674" --download-images "~/zambrow-vault/nieruchomosci/img/2586674" --max-images 5
 
 # Company card from catalog on zambrow.org
 python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py get "https://zambrow.org/firma/dom-na-blysk-uslugi-sprzatajace-agnieszka-le-m27443"
@@ -210,10 +213,21 @@ python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py get "https://zambrow.or
 
 ---
 
-### 6. Browsing Categories (`browse`)
+### 6. Browsing Categories & Classifieds (`browse`)
 
 ```bash
-# Browse classified ads in a specific branch on zambrow.org
+# Browse real estate classifieds (shows extracted prices, dates, categories, and thumbnails)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "ogloszenia/nieruchomosci/"
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "ogloszenia/nieruchomosci/domy/"
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "ogloszenia/nieruchomosci/mieszkania/"
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "ogloszenia/nieruchomosci/dzialki-grunty/"
+
+# Browse community discussion forums (shows thread title, author, date, last reply, comment count)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "forum/ogolne/"
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "forum/regionalne/"
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "forum/polityczne/"
+
+# Browse classified ads in specific service branches
 python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "ogloszenia/uslugi-i-firmy/elektryk"
 python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "ogloszenia/uslugi-i-firmy/remontowo--budowlane"
 
