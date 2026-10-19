@@ -123,10 +123,13 @@ def fetch_url(url: str, timeout: int = 15, max_retries: int = 3) -> str:
 
 def download_images(image_urls: List[str], dest_dir: str, limit: int = 5) -> List[str]:
     """Downloads up to limit images into dest_dir, returning list of saved file paths."""
+    real_urls = [u for u in image_urls if "placeholder" not in u.lower()]
+    if not real_urls:
+        return []
     out_dir = pathlib.Path(dest_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     saved = []
-    for idx, img_url in enumerate(image_urls[:limit], 1):
+    for idx, img_url in enumerate(real_urls[:limit], 1):
         ext = ".jpg"
         if ".png" in img_url.lower(): ext = ".png"
         elif ".webp" in img_url.lower(): ext = ".webp"
@@ -528,6 +531,8 @@ def parse_ad_offer(url: str, content: str) -> Dict[str, Any]:
 
     for p in photo_matches:
         p_clean = p.replace("/./", "/")
+        if "placeholder" in p_clean.lower():
+            continue
         if not p_clean.startswith("http"):
             p_full = urllib.parse.urljoin(BASE_URL, p_clean)
         else:
@@ -638,7 +643,15 @@ def parse_news_article(url: str, content: str) -> Dict[str, Any]:
     og_desc = og_m.group(1).strip() if og_m else ""
 
     lead = ld.get("description") or og_desc
-    if not lead and body:
+    if lead and body:
+        clean_lead = lead.strip()
+        if not clean_lead.endswith((".", "!", "?", "…", "...")):
+            first_para = body.split("\n\n")[0].strip()
+            if first_para.startswith(clean_lead[:25]):
+                lead = first_para
+            else:
+                lead = clean_lead + "..."
+    elif not lead and body:
         lead = body.split(".")[0].strip() + "."
 
     sec_m = re.search(r"<meta property=[\x27\x22]article:section[\x27\x22] content=[\x27\x22](.*?)[\x27\x22]", content)
