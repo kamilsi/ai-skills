@@ -24,6 +24,7 @@ import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 import email.utils
+import csv
 from typing import List, Dict, Any, Optional
 
 BASE_URL = "https://zambrow.org"
@@ -2001,6 +2002,339 @@ def search_bip(query: str = "", target: str = "all", section: str = "wszystkie",
         results = results[:limit]
     return results
 
+# ==============================================================================
+# GUS Bank Danych Lokalnych (BDL) REST API
+# ==============================================================================
+
+BDL_BASE_URL = "https://bdl.stat.gov.pl/api/v1"
+BDL_UNITS = {
+    "powiat": "062013814000",       # Powiat zambrowski (level 5)
+    "miasto": "062013814011",       # Miasto Zambrów (level 6, kind 1)
+    "gmina": "062013814052",        # Gmina Zambrów wiejska (level 6, kind 2)
+    "wojewodztwo": "062000000000",  # Województwo podlaskie (level 2)
+    "polska": "000000000000"        # Polska (level 0)
+}
+
+BDL_PRESETS = {
+    "wynagrodzenie_pln": {
+        "title": "Przeciętne miesięczne wynagrodzenia brutto (Powiat zambrowski)",
+        "unit": "powiat",
+        "var_id": 64428,
+        "measure": "zł"
+    },
+    "wynagrodzenie_rel_kraj": {
+        "title": "Wynagrodzenie brutto w relacji do średniej krajowej (Polska=100)",
+        "unit": "powiat",
+        "var_id": 64429,
+        "measure": "%"
+    },
+    "bezrobocie_stopa": {
+        "title": "Stopa bezrobocia rejestrowanego na koniec roku",
+        "unit": "powiat",
+        "var_id": 60270,
+        "measure": "%"
+    },
+    "bezrobotni_miasto": {
+        "title": "Zarejestrowani bezrobotni ogółem w mieście Zambrów",
+        "unit": "miasto",
+        "var_id": 6,
+        "measure": "osoby"
+    },
+    "ludnosc_miasto": {
+        "title": "Stan ludności — Miasto Zambrów",
+        "unit": "miasto",
+        "var_id": 72305,
+        "measure": "osoby"
+    },
+    "mieszkania_oddane": {
+        "title": "Mieszkania oddane do użytkowania ogółem — Miasto Zambrów",
+        "unit": "miasto",
+        "var_id": 748601,
+        "measure": "mieszkania"
+    },
+    "mieszkania_pow_m2": {
+        "title": "Powierzchnia użytkowa mieszkań oddanych — Miasto Zambrów",
+        "unit": "miasto",
+        "var_id": 748603,
+        "measure": "m²"
+    },
+    "mieszkania_deweloper": {
+        "title": "Mieszkania na sprzedaż lub wynajem (deweloperskie) — Miasto Zambrów",
+        "unit": "miasto",
+        "var_id": 748610,
+        "measure": "mieszkania"
+    },
+    "firmy_regon": {
+        "title": "Podmioty gospodarki narodowej w rejestrze REGON — Miasto Zambrów",
+        "unit": "miasto",
+        "var_id": 58903,
+        "measure": "podmioty"
+    },
+    "firmy_mikro": {
+        "title": "Mikroprzedsiębiorstwa (0-9) w rejestrze REGON — Miasto Zambrów",
+        "unit": "miasto",
+        "var_id": 58901,
+        "measure": "podmioty"
+    }
+}
+
+def fetch_bdl_metric(var_id: int, unit_id: str) -> List[Dict[str, Any]]:
+    """Fetches full historical time series for a variable from GUS BDL."""
+    url = f"{BDL_BASE_URL}/data/by-unit/{unit_id}?var-id={var_id}&format=json&page-size=100"
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            results = data.get("results", [])
+            if results and "values" in results[0]:
+                return results[0].get("values", [])
+            return []
+    except Exception as e:
+        sys.stderr.write(f"⚠️ Błąd pobierania zmiennej BDL {var_id}: {e}\n")
+        return []
+
+def search_bdl_variables(query: str, page: int = 0, page_size: int = 15) -> List[Dict[str, Any]]:
+    """Searches statistical variables in GUS BDL by keyword."""
+    encoded_q = urllib.parse.quote(query)
+    url = f"{BDL_BASE_URL}/variables/search?query={encoded_q}&page={page}&page-size={page_size}&format=json"
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            out = []
+            for item in data.get("results", []):
+                name = f"{item.get('n1', '')} {item.get('n2', '')}".strip()
+                out.append({
+                    "id": item.get("id"),
+                    "subject_id": item.get("subjectId"),
+                    "name": name,
+                    "unit": item.get("measureUnitName", ""),
+                    "level": item.get("level")
+                })
+            return out
+    except Exception as e:
+        sys.stderr.write(f"⚠️ Błąd wyszukiwania w BDL: {e}\n")
+        return []
+
+def get_bdl_dashboard(years_back: int = 10) -> Dict[str, Any]:
+    """Generates structured dashboard table of all BDL key indicators."""
+    all_data = {}
+    years = set()
+
+    for col_name, meta in BDL_PRESETS.items():
+        unit_id = BDL_UNITS.get(meta["unit"], BDL_UNITS["powiat"])
+        vals = fetch_bdl_metric(meta["var_id"], unit_id)
+        val_map = {}
+        for row in vals:
+            y = int(row["year"])
+            years.add(y)
+            val_map[y] = row["val"]
+        all_data[col_name] = val_map
+
+    sorted_years = sorted(list(years))
+    if years_back and len(sorted_years) > years_back:
+        sorted_years = sorted_years[-years_back:]
+
+    table_rows = []
+    for y in sorted_years:
+        row = {"rok": y}
+        for col_name in BDL_PRESETS:
+            row[col_name] = all_data[col_name].get(y, None)
+        table_rows.append(row)
+
+    return {
+        "presets": BDL_PRESETS,
+        "years": sorted_years,
+        "rows": table_rows
+    }
+
+def export_bdl_csv(filepath: str, years_back: Optional[int] = None) -> bool:
+    """Exports all BDL time series data to wide CSV file for R analysis."""
+    dashboard = get_bdl_dashboard(years_back=years_back or 30)
+    fieldnames = ["rok"] + list(BDL_PRESETS.keys())
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for r in dashboard["rows"]:
+                writer.writerow(r)
+        return True
+    except Exception as e:
+        sys.stderr.write(f"⚠️ Błąd eksportu BDL do CSV: {e}\n")
+        return False
+
+# ==============================================================================
+# Powiatowy Urząd Pracy w Zambrowie (PUP) & WUP Białystok Scraper
+# ==============================================================================
+
+PUP_ZAMBROW_URL = "https://zambrow.praca.gov.pl"
+WUP_BIALYSTOK_URL = "https://wupbialystok.praca.gov.pl"
+
+def fetch_pup_news(limit: int = 15) -> List[Dict[str, Any]]:
+    """Scrapes news, grants, trainings, and announcements from PUP Zambrów."""
+    url = f"{PUP_ZAMBROW_URL}/rynek-pracy/aktualnosci"
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html_txt = resp.read().decode("utf-8", errors="ignore")
+            items = re.findall(
+                r'<a[^>]+href=[\x27\x22](https://zambrow\.praca\.gov\.pl/rynek-pracy/aktualnosci/-/asset_publisher/[^\x27\x22]+)[\x27\x22][^>]*>(.*?)</a>',
+                html_txt,
+                re.DOTALL
+            )
+            out = []
+            seen = set()
+            for item_url, title_raw in items:
+                title = clean_html_text(title_raw)
+                if not title or item_url in seen:
+                    continue
+                seen.add(item_url)
+                
+                date_val = ""
+                m_date = re.search(r'(\d{2}\.\d{2}\.\d{4})', title)
+                if m_date:
+                    date_val = m_date.group(1)
+
+                out.append({
+                    "source": "PUP Zambrów (Aktualności)",
+                    "title": title,
+                    "date": date_val,
+                    "url": item_url
+                })
+                if limit and len(out) >= limit:
+                    break
+            return out
+    except Exception as e:
+        sys.stderr.write(f"⚠️ Błąd pobierania aktualności PUP: {e}\n")
+        return []
+
+def fetch_pup_reports(limit: int = 15) -> List[Dict[str, Any]]:
+    """Scrapes monthly labor market bulletins and MRPiPS reports for Powiat Zambrowski."""
+    reports = []
+    
+    # 1. WUP Białystok monthly bulletins
+    wup_url = f"{WUP_BIALYSTOK_URL}/podlaski-rynek-pracy-informator-miesieczny"
+    try:
+        req = urllib.request.Request(wup_url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html_txt = resp.read().decode("utf-8", errors="ignore")
+            matches = re.findall(
+                r'<a[^>]+href=[\x27\x22](https://wupbialystok\.praca\.gov\.pl/documents/[^\x27\x22]+\.pdf[^\x27\x22]*)[\x27\x22][^>]*>(.*?)</a>',
+                html_txt,
+                re.DOTALL
+            )
+            seen = set()
+            for pdf_url, name_raw in matches:
+                name = clean_html_text(name_raw)
+                if not name or pdf_url in seen:
+                    continue
+                seen.add(pdf_url)
+                reports.append({
+                    "source": "WUP Białystok (Podlaski rynek pracy)",
+                    "type": "Biuletyn miesięczny PDF",
+                    "title": f"Informator miesięczny — {name}",
+                    "url": pdf_url
+                })
+                if limit and len(reports) >= limit:
+                    break
+    except Exception as e:
+        sys.stderr.write(f"⚠️ Błąd pobierania raportów WUP: {e}\n")
+
+    # 2. PUP Zambrów MRPiPS reports
+    pup_mrpips_url = f"{PUP_ZAMBROW_URL}/sprawozdania-mrpips"
+    try:
+        req = urllib.request.Request(pup_mrpips_url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html_txt = resp.read().decode("utf-8", errors="ignore")
+            matches = re.findall(
+                r'<a[^>]+href=[\x27\x22](https://zambrow\.praca\.gov\.pl/documents/[^\x27\x22]+\.pdf[^\x27\x22]*)[\x27\x22][^>]*>(.*?)</a>',
+                html_txt,
+                re.DOTALL
+            )
+            for pdf_url, name_raw in matches:
+                name = clean_html_text(name_raw)
+                if not name or any(r["url"] == pdf_url for r in reports):
+                    continue
+                reports.append({
+                    "source": "PUP Zambrów (Sprawozdanie MRPiPS)",
+                    "type": "Sprawozdanie MRPiPS-01 PDF",
+                    "title": f"Sprawozdanie o rynku pracy — {name}",
+                    "url": pdf_url
+                })
+    except Exception as e:
+        sys.stderr.write(f"⚠️ Błąd pobierania sprawozdań MRPiPS: {e}\n")
+
+    if limit and len(reports) > limit:
+        reports = reports[:limit]
+    return reports
+
+def get_pup_article(url: str) -> Dict[str, Any]:
+    """Fetches and parses full text and attachments of a PUP Zambrów announcement."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html_txt = resp.read().decode("utf-8", errors="ignore")
+            
+            # Title
+            t_m = re.search(r'<title>(.*?)</title>', html_txt, re.DOTALL)
+            title = ""
+            if t_m:
+                t_raw = clean_html_text(t_m.group(1))
+                title = re.sub(r'\s*-\s*Powiatowy Urząd Pracy.*$', '', t_raw)
+                
+            # Date
+            d_m = re.search(r'<span[^>]*class=[\x27\x22][^\x27\x22]*date[^\x27\x22]*[\x27\x22][^>]*>(.*?)</span>', html_txt, re.DOTALL)
+            date_val = clean_html_text(d_m.group(1)) if d_m else ""
+            date_val = re.sub(r'^Data publikacji:\s*', '', date_val).strip()
+
+            # Content body
+            body_m = re.search(r'<div[^>]*class=[\x27\x22][^\x27\x22]*journal-content-article[^\x27\x22]*[\x27\x22][^>]*>(.*?)</div>\s*</div>', html_txt, re.DOTALL)
+            body = clean_html_text(body_m.group(1)) if body_m else ""
+
+            # Attachments
+            attachments = []
+            att_matches = re.findall(r'<a[^>]+href=[\x27\x22](https://zambrow\.praca\.gov\.pl/documents/[^\x27\x22]+)[\x27\x22][^>]*>(.*?)</a>', html_txt, re.DOTALL)
+            for att_url, att_name in att_matches:
+                attachments.append({
+                    "name": clean_html_text(att_name),
+                    "url": att_url
+                })
+
+            return {
+                "source": "PUP Zambrów",
+                "title": title,
+                "date": date_val,
+                "body": body,
+                "attachments": attachments,
+                "url": url
+            }
+    except Exception as e:
+        return {"error": str(e), "url": url}
+
+def export_pup_csv(filepath: str, limit: int = 50) -> bool:
+    """Exports PUP news and reports to CSV file."""
+    news = fetch_pup_news(limit=limit)
+    reports = fetch_pup_reports(limit=limit)
+    items = news + reports
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["source", "type", "title", "date", "url"])
+            writer.writeheader()
+            for it in items:
+                writer.writerow({
+                    "source": it.get("source", ""),
+                    "type": it.get("type", "Aktualność"),
+                    "title": it.get("title", ""),
+                    "date": it.get("date", ""),
+                    "url": it.get("url", "")
+                })
+        return True
+    except Exception as e:
+        sys.stderr.write(f"⚠️ Błąd eksportu PUP do CSV: {e}\n")
+        return False
+
 def main():
     parser = argparse.ArgumentParser(description="zambrow_tool.py — Zambrów local news, services, and cinema CLI helper")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2068,6 +2402,26 @@ def main():
     bip_p.add_argument("-s", "--section", choices=["umowy", "sesje", "praca", "wszystkie"], default="wszystkie", help="Sekcja BIP")
     bip_p.add_argument("-m", "--limit", type=int, default=25, help="Maksymalna liczba pozycji")
     bip_p.add_argument("--json", action="store_true", help="Wyjście w formacie JSON")
+
+    # bdl (GUS Bank Danych Lokalnych)
+    bdl_p = subparsers.add_parser("bdl", help="Główny Urząd Statystyczny — Bank Danych Lokalnych (BDL API)")
+    bdl_p.add_argument("action", nargs="?", choices=["dashboard", "search", "get", "export"], default="dashboard",
+                       help="Akcja: dashboard (tablica wskaźników), search (szukaj zmiennych), get (pobierz zmienną), export (eksport CSV)")
+    bdl_p.add_argument("query", nargs="?", default="", help="Fraza do wyszukania w 'search' lub ID zmiennej w 'get'")
+    bdl_p.add_argument("-u", "--unit", choices=["powiat", "miasto", "gmina", "wojewodztwo", "polska"], default="powiat",
+                       help="Jednostka terytorialna (domyślnie powiat)")
+    bdl_p.add_argument("--export-csv", dest="export_csv_path", help="Ścieżka do pliku wyjściowego CSV")
+    bdl_p.add_argument("--years", type=int, default=10, help="Liczba ostatnich lat w zestawieniu dashboard (domyślnie 10)")
+    bdl_p.add_argument("--json", action="store_true", help="Wyjście w formacie JSON")
+
+    # pup (Powiatowy Urząd Pracy w Zambrowie)
+    pup_p = subparsers.add_parser("pup", help="Powiatowy Urząd Pracy w Zambrowie (zambrow.praca.gov.pl / WUP)")
+    pup_p.add_argument("action", nargs="?", choices=["news", "reports", "get", "export"], default="news",
+                       help="Akcja: news (aktualności i nabory), reports (biuletyny miesięczne), get (szczegóły), export (eksport CSV)")
+    pup_p.add_argument("url", nargs="?", default="", help="URL artykułu dla akcji 'get'")
+    pup_p.add_argument("-m", "--limit", type=int, default=15, help="Maksymalna liczba pozycji (domyślnie 15)")
+    pup_p.add_argument("--export-csv", dest="export_csv_path", help="Ścieżka do pliku wyjściowego CSV")
+    pup_p.add_argument("--json", action="store_true", help="Wyjście w formacie JSON")
 
     # cinema / kino
     cinema_p = subparsers.add_parser("cinema", aliases=["kino"], help="Kino Miejskiego Ośrodka Kultury w Zambrowie (kino.mokzambrow.pl)")
@@ -2638,6 +2992,130 @@ def main():
                 if it.get("details"):
                     print(f"  Info: {it['details']}")
                 print()
+
+    elif args.command == "bdl":
+        if args.action == "dashboard" or (args.action == "export" and args.export_csv_path):
+            if args.export_csv_path or args.action == "export":
+                path = args.export_csv_path or "data/bdl_wskazniki_zambrow.csv"
+                ok = export_bdl_csv(path, years_back=args.years)
+                if ok:
+                    print(f"✅ Wyeksportowano szeregi czasowe BDL do pliku: {path}")
+                return
+            dashboard = get_bdl_dashboard(years_back=args.years)
+            if args.json:
+                print(json.dumps(dashboard, indent=2, ensure_ascii=False))
+            else:
+                print(f"\n📊 Główny Urząd Statystyczny — Bank Danych Lokalnych (BDL)")
+                print(f"Powiat zambrowski ({BDL_UNITS['powiat']}) / Miasto Zambrów ({BDL_UNITS['miasto']})")
+                if not dashboard["years"]:
+                    print("  Brak danych.")
+                    return
+                print(f"Ostatnie {len(dashboard['years'])} lat ({min(dashboard['years'])}–{max(dashboard['years'])}):\n")
+                header_line = f"{'Rok':<6} | {'Wynagr. [zł]':<12} | {'Relacja [%]':<11} | {'Bezrob. [%]':<11} | {'Ludność':<8} | {'Mieszk.':<7} | {'Deweloper':<9} | {'Firmy':<6}"
+                print(header_line)
+                print("-" * len(header_line))
+                for r in dashboard["rows"]:
+                    y = r["rok"]
+                    w = f"{r['wynagrodzenie_pln']:.2f}" if r.get('wynagrodzenie_pln') else "-"
+                    rel = f"{r['wynagrodzenie_rel_kraj']:.1f}%" if r.get('wynagrodzenie_rel_kraj') else "-"
+                    b = f"{r['bezrobocie_stopa']:.1f}%" if r.get('bezrobocie_stopa') else "-"
+                    pop = str(r.get('ludnosc_miasto') or "-")
+                    m = str(r.get('mieszkania_oddane') or "-")
+                    dew = str(r.get('mieszkania_deweloper') or "-")
+                    f = str(r.get('firmy_regon') or "-")
+                    print(f"{y:<6} | {w:<12} | {rel:<11} | {b:<11} | {pop:<8} | {m:<7} | {dew:<9} | {f:<6}")
+                print()
+
+        elif args.action == "search":
+            results = search_bdl_variables(args.query or "wynagrodzenia")
+            if args.json:
+                print(json.dumps(results, indent=2, ensure_ascii=False))
+            else:
+                print(f"\n🔍 Wyniki wyszukiwania w BDL dla zapytania '{args.query}' ({len(results)} zmiennych):\n")
+                if not results:
+                    print("  Brak wyników.")
+                for res in results:
+                    lvl_name = f"poziom {res['level']}" if res.get('level') else ""
+                    print(f"• [ID: {res['id']}] {res['name']} ({res['unit']}) {lvl_name}")
+                print()
+
+        elif args.action == "get":
+            try:
+                var_id = int(args.query)
+            except ValueError:
+                print(f"❌ Błąd: podaj numeryczne ID zmiennej BDL (np. 64428). Podano: '{args.query}'")
+                return
+            unit_id = BDL_UNITS.get(args.unit, args.unit)
+            vals = fetch_bdl_metric(var_id, unit_id)
+            if args.json:
+                print(json.dumps({"var_id": var_id, "unit_id": unit_id, "values": vals}, indent=2, ensure_ascii=False))
+            else:
+                print(f"\n📈 Szereg czasowy BDL dla zmiennej {var_id} (jednostka {unit_id}):\n")
+                if not vals:
+                    print("  Brak danych.")
+                for v in vals:
+                    print(f"  {v['year']}: {v['val']}")
+                print()
+
+    elif args.command == "pup":
+        if args.action == "news":
+            items = fetch_pup_news(limit=args.limit)
+            if args.json:
+                print(json.dumps(items, indent=2, ensure_ascii=False))
+            else:
+                print(f"\n🏢 Powiatowy Urząd Pracy w Zambrowie — Aktualności i Nabory ({len(items)} pozycji):\n")
+                if not items:
+                    print("  Brak aktualności.")
+                for it in items:
+                    d_str = f" [{it['date']}]" if it.get("date") else ""
+                    print(f"•{d_str} {it['title']}")
+                    print(f"  URL: {it['url']}\n")
+
+        elif args.action == "reports":
+            reports = fetch_pup_reports(limit=args.limit)
+            if args.json:
+                print(json.dumps(reports, indent=2, ensure_ascii=False))
+            else:
+                print(f"\n📑 Biuletyny statystyczne rynku pracy (WUP Białystok / PUP Zambrów) ({len(reports)} pozycji):\n")
+                if not reports:
+                    print("  Brak raportów.")
+                for rep in reports:
+                    print(f"• [{rep['source']}] {rep['title']}")
+                    print(f"  Pobierz PDF: {rep['url']}\n")
+
+        elif args.action == "get":
+            if not args.url:
+                print("❌ Podaj URL artykułu/ogłoszenia z portalu zambrow.praca.gov.pl")
+                return
+            art = get_pup_article(args.url)
+            if args.json:
+                print(json.dumps(art, indent=2, ensure_ascii=False))
+            else:
+                if "error" in art:
+                    print(f"\n❌ Błąd pobierania artykułu PUP: {art['error']}\n")
+                    return
+                print(f"\n📄 {art['title']}")
+                if art.get("date"):
+                    print(f"📅 Data publikacji: {art['date']}")
+                print(f"🔗 URL: {art['url']}\n")
+                if art.get("body"):
+                    print(f"{art['body']}\n")
+                if art.get("attachments"):
+                    print("📎 Załączniki:")
+                    for att in art["attachments"]:
+                        print(f"  • {att['name']}: {att['url']}")
+                    print()
+
+        elif args.action == "export":
+            path = args.export_csv_path or "data/pup_komunikaty.csv"
+            ok = export_pup_csv(path, limit=args.limit)
+            if ok:
+                print(f"✅ Wyeksportowano rejestr PUP do pliku: {path}")
+
+        if args.export_csv_path and args.action != "export":
+            ok = export_pup_csv(args.export_csv_path, limit=args.limit)
+            if ok:
+                print(f"✅ Wyeksportowano rejestr PUP do pliku: {args.export_csv_path}")
 
 if __name__ == "__main__":
     main()

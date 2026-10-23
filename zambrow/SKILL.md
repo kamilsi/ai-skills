@@ -2,11 +2,12 @@
 name: zambrow
 description: >-
   Search, extract contacts, and browse local services, companies, classifieds,
-  forum discussions, local news, municipal events calendar, and cinema showtimes in Zambrów
-  from Zambrow.org, Zambrowiacy.pl, and Kino.mokzambrow.pl. Use whenever the user asks about
-  Zambrów: local news, events, concerts, cinema repertory, contractors, repair services,
-  classifieds, or municipal affairs (e.g. "co słychać w Zambrowie", "imprezy Zambrów",
-  "kino Zambrów", "repertuar kina", "ogłoszenia Zambrów", "forum Zambrów").
+  forum discussions, local news, municipal events calendar, cinema showtimes,
+  labor market (PUP), and GUS BDL macroeconomic statistics in Zambrów.
+  Use whenever the user asks about Zambrów: local news, events, concerts, cinema repertory,
+  contractors, repair services, classifieds, municipal affairs, unemployment, wages,
+  or demographics (e.g. "co słychać w Zambrowie", "imprezy Zambrów", "kino Zambrów",
+  "repertuar kina", "ogłoszenia Zambrów", "forum Zambrów", "bezrobocie Zambrów", "GUS Zambrów").
 ---
 
 # Zambrów Local News, Services, Community, Events & Cinema Skill
@@ -275,6 +276,50 @@ python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bip --target powiat --s
 
 # Structured JSON output
 python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bip "doradztwo" --json
+```
+
+---
+
+### 9. GUS Bank Danych Lokalnych (`bdl`)
+
+Official macroeconomic, demographic, housing, wage, and enterprise statistics from the Central Statistical Office (GUS BDL REST API `https://bdl.stat.gov.pl/api/v1/`). Preconfigured for Powiat Zambrowski (`062013814000`) and Miasto Zambrów (`062013814011`):
+
+```bash
+# Full 10-year macroeconomic & demographic dashboard for Zambrów (salaries, unemployment, population, new flats, REGON)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bdl
+
+# Query specific preset metric or variable ID (e.g. wynagrodzenia, bezrobocie, ludnosc, mieszkania, firmy)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bdl wynagrodzenia
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bdl bezrobocie --unit powiat
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bdl 748601 --unit miasto --years 5
+
+# Search GUS BDL variable catalog
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bdl search "mieszkania oddane"
+
+# Export historical indicators to CSV for R statistical modeling (Agent Statystyk)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bdl --export-csv ~/zambrow-vault/data/bdl_wskazniki_zambrow.csv --years 10
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bdl --json
+```
+
+---
+
+### 10. Powiatowy Urząd Pracy i WUP (`pup`)
+
+Monitors the local labor market, training grants, internship funding freezes, and statistical bulletins from Powiatowy Urząd Pracy w Zambrowie (`zambrow.praca.gov.pl`) and Wojewódzki Urząd Pracy w Białymstoku (`wupbialystok.praca.gov.pl`):
+
+```bash
+# Latest news, recruitment announcements, and internship grant updates from PUP Zambrów
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py pup news
+
+# Monthly labor market statistical reports and PDF bulletins (WUP Białystok & PUP Zambrów)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py pup reports
+
+# Full details and attachments for a specific PUP announcement
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py pup get "<URL>"
+
+# Export PUP announcements and monthly bulletins to CSV for Agent Statystyk
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py pup export --export-csv ~/zambrow-vault/data/pup_komunikaty.csv
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py pup news --json
 ```
 
 ---
