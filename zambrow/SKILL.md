@@ -222,6 +222,9 @@ python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "ogloszenia/nier
 python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "ogloszenia/nieruchomosci/mieszkania/"
 python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "ogloszenia/nieruchomosci/dzialki-grunty/"
 
+# Pagination and limiting results (-p, --page, -m, --limit)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "ogloszenia/nieruchomosci/" --page 2 --limit 15
+
 # Browse community discussion forums (shows thread title, author, date, last reply, comment count)
 python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "forum/ogolne/"
 python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "forum/regionalne/"
@@ -236,6 +239,43 @@ python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py browse "budownictwo-dom
 ```
 
 For a comprehensive list of category slugs and URLs, see [references/categories.md](./references/categories.md).
+
+---
+
+### 7. Official KRS Company Registry Lookup (`krs`)
+
+Fetches official, up-to-date company registration data directly from the Ministry of Justice Open REST API (`api-krs.ms.gov.pl`):
+
+```bash
+# Lookup company details (board members, supervisory council, share capital, representation)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py krs 0000130730
+
+# Output structured JSON for automated OSINT verification & agent pipelines
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py krs 0000130730 --json
+```
+
+---
+
+### 8. Public Information Bulletin (BIP) Search (`bip`)
+
+Unified search and scraping across municipal and county Public Information Bulletins (City of Zambrów contracts register at `bip.zambrow.pl` and County of Zambrów council sessions, job postings, and announcements at `samorzad.gov.pl/web/powiat-zambrowski/`):
+
+```bash
+# Search contracts and municipal records for keywords
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bip "audyt"
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bip "szpital"
+
+# Filter by section: umowy, sesje, praca, wszystkie
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bip --section praca
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bip --section sesje
+
+# Filter by target: miasto (bip.zambrow.pl) or powiat (samorzad.gov.pl)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bip "remont" --target miasto
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bip --target powiat --section praca
+
+# Structured JSON output
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py bip "doradztwo" --json
+```
 
 ---
 

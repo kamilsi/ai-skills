@@ -106,6 +106,9 @@ def fetch_url(url: str, timeout: int = 15, max_retries: int = 3) -> str:
             if e.code == 429 and attempt < max_retries:
                 time.sleep(1.2 * (attempt + 1))
                 continue
+            if e.code in (404, 500, 502, 503, 504, 507):
+                sys.stderr.write(f"⚠️ Błąd serwera HTTP {e.code} podczas pobierania {url}.\n")
+                return ""
             raise
     
     # Replace Cloudflare protected emails inline
@@ -487,6 +490,9 @@ def parse_ad_offer(url: str, content: str) -> Dict[str, Any]:
         if price_m:
             price = clean_html_text(price_m.group(1))
 
+    if not price or price.strip().lower() in ("0", "0 zł", "0.00 zł", "0,00 zł", "0.00", "0,00", "0.0", "0 zł do negocjacji"):
+        price = "Do uzgodnienia / na zapytanie"
+
     params = []
     param_matches = re.findall(r"<div class=[\x27\x22]announ__parameter[^\x27\x22]*[\x27\x22][^>]*>(.*?)</div>", content, re.DOTALL)
     for pm in param_matches:
@@ -670,6 +676,23 @@ def parse_news_article(url: str, content: str) -> Dict[str, Any]:
         if img_m:
             image_url = img_m.group(1)
 
+    # Parse citizen comments under article
+    comments = []
+    authors = re.findall(r"<span[^>]*class=[\x27\x22][^\x27\x22]*comment__author[^\x27\x22]*[\x27\x22][^>]*>(.*?)</span>", content, re.DOTALL)
+    dates = re.findall(r"<span[^>]*class=[\x27\x22][^\x27\x22]*comment__date[^\x27\x22]*[\x27\x22][^>]*>(.*?)</span>", content, re.DOTALL)
+    contents = re.findall(r"<div[^>]*class=[\x27\x22][^\x27\x22]*comment__content[^\x27\x22]*[\x27\x22][^>]*>(.*?)</div>", content, re.DOTALL)
+    
+    max_c = min(len(authors), len(contents))
+    for i in range(max_c):
+        c_author = clean_html_text(authors[i])
+        c_date = clean_html_text(dates[i]) if i < len(dates) else ""
+        c_body = clean_html_text(contents[i])
+        comments.append({
+            "author": c_author,
+            "date": c_date,
+            "text": c_body
+        })
+
     return {
         "source": "zambrow.org",
         "type": "news",
@@ -685,7 +708,9 @@ def parse_news_article(url: str, content: str) -> Dict[str, Any]:
         "image": image_url,
         "url": url,
         "phones": extract_phones(body),
-        "emails": extract_emails(body)
+        "emails": extract_emails(body),
+        "comments": comments,
+        "comments_count": len(comments)
     }
 
 def parse_zambrowiacy_page(url: str, content: str) -> Dict[str, Any]:
@@ -1632,17 +1657,41 @@ def scrape_news(
     results.sort(key=sort_key, reverse=True)
     return results[:limit]
 
-def browse_category(path: str) -> List[Dict[str, Any]]:
-    """Browses a section URL on zambrow.org (classifieds, forum, firms)."""
+def browse_category(path: str, page: int = 1, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Browses a section URL on zambrow.org (classifieds, forum, firms) with pagination and relative date normalization."""
     if not path.startswith("http"):
         path = path.lstrip("/")
+        if page > 1 and "strona" not in path:
+            path = path.rstrip("/") + f"/strona{page}"
         url = f"{BASE_URL}/{path}"
     else:
         url = path
+        if page > 1 and "strona" not in url:
+            url = url.rstrip("/") + f"/strona{page}"
         
     content = fetch_url(url)
+    if not content:
+        return []
+
     results = []
     seen = set()
+
+    today_dt = datetime.date.today()
+    rel_map = {
+        "DZISIAJ": today_dt.isoformat(),
+        "WCZORAJ": (today_dt - datetime.timedelta(days=1)).isoformat(),
+        "PRZEDWCZORAJ": (today_dt - datetime.timedelta(days=2)).isoformat(),
+    }
+
+    def normalize_browse_date(d_raw: str) -> str:
+        d_clean = d_raw.strip().rstrip("|").strip()
+        up = d_clean.upper()
+        if up in rel_map:
+            return rel_map[up]
+        m = re.match(r"^(\d{2})/(\d{2})/(\d{4})", d_clean)
+        if m:
+            return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+        return d_clean
     
     # 1. Structured classified items (li.classified__item)
     classified_blocks = re.findall(r"<li class=[\x27\x22][^\x27\x22]*classified__item[^\x27\x22]*[\x27\x22][^>]*>(.*?)</li>", content, re.DOTALL)
@@ -1672,9 +1721,20 @@ def browse_category(path: str) -> List[Dict[str, Any]]:
         price_m = re.search(r"<div class=[\x27\x22]classified__price[\x27\x22][^>]*>(.*?)</div>", block, re.DOTALL)
         if price_m:
             price = clean_html_text(price_m.group(1))
+        if not price or price.strip().lower() in ("0", "0 zł", "0.00 zł", "0,00 zł", "0.00", "0,00", "0.0", "0 zł do negocjacji"):
+            price = "Do uzgodnienia / na zapytanie"
             
-        filters = [clean_html_text(f).strip(" |") for f in re.findall(r"<span class=[\x27\x22]classified__filter[\x27\x22][^>]*>(.*?)</span>", block, re.DOTALL)]
-        filters = [f for f in filters if f]
+        raw_filters = [clean_html_text(f).strip(" |") for f in re.findall(r"<span class=[\x27\x22]classified__filter[\x27\x22][^>]*>(.*?)</span>", block, re.DOTALL)]
+        raw_filters = [f for f in raw_filters if f]
+
+        item_date = ""
+        filters = []
+        for f in raw_filters:
+            norm_d = normalize_browse_date(f)
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", norm_d) or f.upper() in rel_map:
+                item_date = norm_d
+            else:
+                filters.append(f)
         
         thumb_m = re.search(r"<img[^>]+src=[\x27\x22]([^\x27\x22]+)[\x27\x22]", block)
         thumb = thumb_m.group(1) if thumb_m else ""
@@ -1684,6 +1744,7 @@ def browse_category(path: str) -> List[Dict[str, Any]]:
         results.append({
             "title": title,
             "url": item_url,
+            "date": item_date,
             "price": price,
             "tags": filters,
             "thumbnail": thumb,
@@ -1701,7 +1762,7 @@ def browse_category(path: str) -> List[Dict[str, Any]]:
         t_title = clean_html_text(link_m.group(2))
         
         meta_m = re.search(r"<span>(\d{2}/\d{2}/\d{4}),\s*autor:\s*([^<]+)</span>", row)
-        date_str = meta_m.group(1) if meta_m else ""
+        date_str = normalize_browse_date(meta_m.group(1)) if meta_m else ""
         author_str = meta_m.group(2).strip() if meta_m else ""
         
         reply_m = re.search(r"<div class=[\x27\x22]forum__entry-reply[\x27\x22][^>]*>\s*([0-9-:\s]+)<br\s*/?>\s*([^<]+)</div>", row)
@@ -1763,6 +1824,181 @@ def browse_category(path: str) -> List[Dict[str, Any]]:
             "type": "forum"
         })
         
+    if limit is not None and limit > 0:
+        results = results[:limit]
+    return results
+
+def fetch_krs(krs_number: str, register: str = "P") -> Dict[str, Any]:
+    """Fetches official company register data from Ministry of Justice KRS REST API."""
+    clean_krs = re.sub(r"\D", "", krs_number).zfill(10)
+    reg = register.upper() if register.upper() in ("P", "S") else "P"
+    
+    url = f"https://api-krs.ms.gov.pl/api/krs/OdpisAktualny/{clean_krs}?rejestr={reg}&format=json"
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    
+    data = {}
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            url_p = f"https://api-krs.ms.gov.pl/api/krs/OdpisPelny/{clean_krs}?rejestr={reg}&format=json"
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url_p, headers={"User-Agent": USER_AGENT}), timeout=15) as resp2:
+                    data = json.loads(resp2.read().decode("utf-8"))
+            except Exception:
+                return {"error": f"Nie znaleziono podmiotu o numerze KRS {krs_number} w rejestrze {reg}."}
+        else:
+            return {"error": f"Błąd API KRS ({e.code}): {e.reason}"}
+    except Exception as e:
+        return {"error": f"Błąd połączenia z API KRS: {e}"}
+
+    odpis = data.get("odpis", {})
+    dane = odpis.get("dane", {})
+    dzial1 = dane.get("dzial1", {})
+    podmiot = dzial1.get("danePodmiotu", {})
+    siedziba = dzial1.get("siedzibaIAdres", {}).get("adres", {})
+    
+    kapital_info = dzial1.get("kapital", {}).get("wysokoscKapitaluZakladowego", {})
+    kapital_str = f"{kapital_info.get('wartosc', '')} {kapital_info.get('waluta', '')}".strip()
+    
+    identyfikatory = podmiot.get("identyfikatory", {})
+    if isinstance(identyfikatory, list) and identyfikatory:
+        identyfikatory = identyfikatory[-1].get("identyfikatory", {})
+    nip = identyfikatory.get("nip", "")
+    regon = identyfikatory.get("regon", "")
+    
+    dzial2 = dane.get("dzial2", {})
+    
+    reprezentacja = dzial2.get("reprezentacja", {})
+    organ_zarzadu = reprezentacja.get("nazwaOrganu", "ZARZĄD")
+    sposob_repr = reprezentacja.get("sposobReprezentacji", "")
+    czlonkowie_zarzadu = []
+    for c in reprezentacja.get("sklad", []):
+        nazwisko_dict = c.get("nazwisko", {})
+        nazwisko = nazwisko_dict.get("nazwiskoICzlon", "") if isinstance(nazwisko_dict, dict) else str(nazwisko_dict)
+        imiona_dict = c.get("imiona", {})
+        imie = imiona_dict.get("imie", "") if isinstance(imiona_dict, dict) else str(imiona_dict)
+        funkcja = c.get("funkcjaWOrganie", "CZŁONEK ZARZĄDU")
+        czlonkowie_zarzadu.append({
+            "imie": imie,
+            "nazwisko": nazwisko,
+            "funkcja": funkcja
+        })
+        
+    rada_nadzorcza = []
+    organy_nadzoru = dzial2.get("organNadzoru", [])
+    if isinstance(organy_nadzoru, list):
+        for on in organy_nadzoru:
+            if isinstance(on, dict):
+                for rn in on.get("sklad", []):
+                    nazwisko_dict = rn.get("nazwisko", {})
+                    nazwisko = nazwisko_dict.get("nazwiskoICzlon", "") if isinstance(nazwisko_dict, dict) else str(nazwisko_dict)
+                    imiona_dict = rn.get("imiona", {})
+                    imie = imiona_dict.get("imie", "") if isinstance(imiona_dict, dict) else str(imiona_dict)
+                    funkcja = rn.get("funkcjaWOrganie", "CZŁONEK RADY NADZORCZEJ")
+                    rada_nadzorcza.append({
+                        "imie": imie,
+                        "nazwisko": nazwisko,
+                        "funkcja": funkcja
+                    })
+
+    return {
+        "krs": clean_krs,
+        "nazwa": podmiot.get("nazwa", ""),
+        "forma_prawna": podmiot.get("formaPrawna", ""),
+        "nip": nip,
+        "regon": regon,
+        "adres": {
+            "ulica": siedziba.get("ulica", ""),
+            "nrDomu": siedziba.get("nrDomu", ""),
+            "kod": siedziba.get("kodPocztowy", ""),
+            "miejscowosc": siedziba.get("miejscowosc", "")
+        },
+        "kapital_zakladowy": kapital_str,
+        "sposob_reprezentacji": sposob_repr,
+        "organ_zarzadzajacy": organ_zarzadu,
+        "zarzad": czlonkowie_zarzadu,
+        "rada_nadzorcza": rada_nadzorcza
+    }
+
+def search_bip(query: str = "", target: str = "all", section: str = "wszystkie", limit: int = 25) -> List[Dict[str, Any]]:
+    """Searches Biuletyn Informacji Publicznej (BIP) of Powiat Zambrowski (Gov.pl) and Miasto Zambrów."""
+    results = []
+    q = query.lower().strip()
+    
+    # 1. Miasto Zambrów - Rejestr Umów (bip.zambrow.pl/umowy/ajax)
+    if target in ("miasto", "all") and section in ("umowy", "wszystkie"):
+        try:
+            req = urllib.request.Request(
+                "https://bip.zambrow.pl/umowy/ajax",
+                headers={"User-Agent": USER_AGENT, "X-Requested-With": "XMLHttpRequest"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                for row in data.get("data", []):
+                    content = row.get("content", "")
+                    contractor = row.get("url", "").replace("-", " ")
+                    ident = row.get("identyfikator", "")
+                    value = row.get("wartosc", "")
+                    date_val = row.get("data_zawarcia", "")
+                    
+                    full_text = f"{content} {contractor} {ident} {value}".lower()
+                    if not q or q in full_text:
+                        results.append({
+                            "source": "BIP Miasto Zambrów",
+                            "type": "umowa",
+                            "title": f"Umowa {ident}: {content}",
+                            "date": date_val,
+                            "value": f"{value} zł" if value else "",
+                            "contractor": contractor,
+                            "url": f"https://bip.zambrow.pl/umowa/{row.get('url', '')}",
+                            "details": f"Wartość: {value} zł | Podmiot: {contractor}"
+                        })
+        except Exception as e:
+            sys.stderr.write(f"⚠️ Błąd pobierania rejestru umów BIP Miasta: {e}\n")
+
+    # 2. Powiat Zambrowski (Gov.pl)
+    if target in ("powiat", "all"):
+        gov_sections = []
+        if section in ("sesje", "wszystkie"):
+            gov_sections.append(("ogloszenia-o-sesjach-i-posiedzeniach-komisji", "Sesje i Posiedzenia Rady Powiatu"))
+        if section in ("praca", "wszystkie"):
+            gov_sections.append(("praca-w-starostwie-", "Nabory i Praca w Starostwie"))
+        if section in ("wszystkie",):
+            gov_sections.append(("ogloszenia-i-komunikaty", "Ogłoszenia i Komunikaty Starostwa"))
+
+        for slug, sec_name in gov_sections:
+            gov_url = f"https://samorzad.gov.pl/web/powiat-zambrowski/{slug}"
+            try:
+                req = urllib.request.Request(gov_url, headers={"User-Agent": USER_AGENT})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    html = resp.read().decode("utf-8", "ignore")
+                    matches = re.findall(
+                        r"<li[^>]*>\s*<a href=[\x27\x22](/web/powiat-zambrowski/[^\x27\x22]+)[\x27\x22][^>]*>.*?<div class=[\x27\x22]title[\x27\x22][^>]*>(.*?)</div>(?:.*?<div class=[\x27\x22]date[\x27\x22][^>]*>(.*?)</div>)?",
+                        html,
+                        re.DOTALL
+                    )
+                    for m_url, m_title, m_date in matches:
+                        clean_title = clean_html_text(m_title)
+                        clean_date = clean_html_text(m_date) if m_date else ""
+                        item_url = f"https://samorzad.gov.pl{m_url}"
+                        if not q or q in clean_title.lower():
+                            results.append({
+                                "source": "BIP Powiat Zambrowski (Gov.pl)",
+                                "type": sec_name,
+                                "title": clean_title,
+                                "date": clean_date,
+                                "value": "",
+                                "contractor": "",
+                                "url": item_url,
+                                "details": f"Kategoria: {sec_name}"
+                            })
+            except Exception as e:
+                sys.stderr.write(f"⚠️ Błąd pobierania sekcji {slug} BIP Powiatu: {e}\n")
+
+    if limit and limit > 0:
+        results = results[:limit]
     return results
 
 def main():
@@ -1815,7 +2051,23 @@ def main():
     # browse
     browse_p = subparsers.add_parser("browse", help="Browse listings in a category on zambrow.org")
     browse_p.add_argument("category", help="Category path, e.g. 'ogloszenia/uslugi-i-firmy/elektryk' or 'budownictwo-dom-mapa'")
+    browse_p.add_argument("-p", "--page", type=int, default=1, help="Numer strony wyników (domyślnie 1)")
+    browse_p.add_argument("-m", "--limit", type=int, default=None, help="Maksymalna liczba pozycji do wyświetlenia")
     browse_p.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # krs (OSINT)
+    krs_p = subparsers.add_parser("krs", help="Sprawdź odpis spółki w Krajowym Rejestrze Sądowym (API Ministerstwa Sprawiedliwości)")
+    krs_p.add_argument("krs", help="Numer KRS spółki (np. 0000130730)")
+    krs_p.add_argument("-r", "--rejestr", choices=["P", "S"], default="P", help="Rejestr: P (Przedsiębiorcy) lub S (Stowarzyszenia)")
+    krs_p.add_argument("--json", action="store_true", help="Wyjście w formacie JSON")
+
+    # bip (OSINT / Samorząd)
+    bip_p = subparsers.add_parser("bip", help="Przeszukaj Biuletyn Informacji Publicznej (Powiat Zambrowski Gov.pl / Miasto Zambrów)")
+    bip_p.add_argument("query", nargs="?", default="", help="Fraza do wyszukania w BIP (np. 'szpital', 'kredyt', 'audyt', 'doradz')")
+    bip_p.add_argument("-t", "--target", choices=["powiat", "miasto", "all"], default="all", help="Instytucja: powiat, miasto lub all")
+    bip_p.add_argument("-s", "--section", choices=["umowy", "sesje", "praca", "wszystkie"], default="wszystkie", help="Sekcja BIP")
+    bip_p.add_argument("-m", "--limit", type=int, default=25, help="Maksymalna liczba pozycji")
+    bip_p.add_argument("--json", action="store_true", help="Wyjście w formacie JSON")
 
     # cinema / kino
     cinema_p = subparsers.add_parser("cinema", aliases=["kino"], help="Kino Miejskiego Ośrodka Kultury w Zambrowie (kino.mokzambrow.pl)")
@@ -2163,9 +2415,14 @@ def main():
                 
     elif args.command == "get":
         data = get_page_details(args.url)
-        if getattr(args, "download_images_dir", None) and data.get("photos"):
-            saved = download_images(data["photos"], args.download_images_dir, limit=args.max_images)
-            data["downloaded_images"] = saved
+        if getattr(args, "download_images_dir", None):
+            if data.get("photos"):
+                saved = download_images(data["photos"], args.download_images_dir, limit=args.max_images)
+                data["downloaded_images"] = saved
+            else:
+                data["downloaded_images"] = []
+                if not args.json:
+                    print("ℹ️ Ogłoszenie nie zawiera autorskich fotografii do pobrania.")
         if args.json:
             print(json.dumps(data, indent=2, ensure_ascii=False))
         else:
@@ -2319,11 +2576,12 @@ def main():
             print("   python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py events --json\n")
 
     elif args.command == "browse":
-        items = browse_category(args.category)
+        items = browse_category(args.category, page=args.page, limit=args.limit)
         if args.json:
             print(json.dumps(items, indent=2, ensure_ascii=False))
         else:
-            print(f"\n📂 Pozycje w kategorii '{args.category}' ({len(items)} pozycji):\n")
+            page_info = f" (strona {args.page})" if args.page > 1 else ""
+            print(f"\n📂 Pozycje w kategorii '{args.category}'{page_info} ({len(items)} pozycji):\n")
             for it in items:
                 price_str = f" [Cena: {it['price']}]" if it.get("price") else ""
                 tags_str = f" | {', '.join(it['tags'])}" if it.get("tags") else ""
@@ -2335,6 +2593,51 @@ def main():
                 print(f"•{price_str} {it['title']}{comm_str} ({it['type']}){tags_str}{author_str}{date_str}{reply_str}")
                 print(f"  {it['url']}")
             print()
+
+    elif args.command == "krs":
+        data = fetch_krs(args.krs, register=args.rejestr)
+        if args.json:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+        else:
+            if "error" in data:
+                print(f"\n❌ {data['error']}\n")
+                return
+            print(f"\n🏢 {data['nazwa']}")
+            print(f"KRS: {data['krs']} | NIP: {data['nip']} | REGON: {data['regon']}")
+            print(f"Forma prawna: {data['forma_prawna']}")
+            adr = data['adres']
+            print(f"Siedziba: ul. {adr['ulica']} {adr['nrDomu']}, {adr['kod']} {adr['miejscowosc']}")
+            if data['kapital_zakladowy']:
+                print(f"Kapitał zakładowy: {data['kapital_zakladowy']}")
+            if data['sposob_reprezentacji']:
+                print(f"Sposób reprezentacji: {data['sposob_reprezentacji']}")
+            if data['zarzad']:
+                print(f"\n👔 {data['organ_zarzadzajacy']} ({len(data['zarzad'])} os.):")
+                for z in data['zarzad']:
+                    print(f"  • {z['imie']} {z['nazwisko']} — {z['funkcja']}")
+            if data['rada_nadzorcza']:
+                print(f"\n🛡️ Rada Nadzorcza ({len(data['rada_nadzorcza'])} os.):")
+                for rn in data['rada_nadzorcza']:
+                    print(f"  • {rn['imie']} {rn['nazwisko']}")
+            print()
+
+    elif args.command == "bip":
+        items = search_bip(query=args.query, target=args.target, section=args.section, limit=args.limit)
+        if args.json:
+            print(json.dumps(items, indent=2, ensure_ascii=False))
+        else:
+            q_str = f" dla zapytania '{args.query}'" if args.query else ""
+            print(f"\n🏛️ Wyniki z Biuletynu Informacji Publicznej (BIP){q_str} ({len(items)} pozycji):\n")
+            if not items:
+                print("  Brak wyników spełniających kryteria.")
+            for it in items:
+                date_str = f" [{it['date']}]" if it.get("date") else ""
+                val_str = f" ({it['value']})" if it.get("value") else ""
+                print(f"•{date_str} [{it['source']}] {it['title']}{val_str}")
+                print(f"  URL: {it['url']}")
+                if it.get("details"):
+                    print(f"  Info: {it['details']}")
+                print()
 
 if __name__ == "__main__":
     main()
