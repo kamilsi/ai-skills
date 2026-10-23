@@ -16,6 +16,7 @@ mkdir -p ~/.gemini && ln -sfn ~/Code/ai-skills ~/.gemini/skills
 - **[`moonshine-game-streaming`](./moonshine-game-streaming/SKILL.md)** (*Linux / RTX 4060*): Administration, monitoring, configuration, and troubleshooting for Moonshine headless GameStream server on `odyseusz` (Ubuntu 26.04 Wayland, HDR, 4K).
 - **[`macos-disk-triage`](./macos-disk-triage/SKILL.md)** (*macOS / Apple Silicon*): Diagnose and safely reclaim disk space on the 245 GB dev MacBook. Checks known runaway writers (Gemini telemetry leak, ~39 GB/hour) before analysing, carries a forensic baseline, and lists the destructive traps to avoid.
 - **[`r-data-analysis`](./r-data-analysis/SKILL.md)** (*Universal*): Interactive data analysis, GLMM/survival modeling, SQLite querying, and `.Rmd` workflows via persistent `r-btw` MCP session.
+- **[`grounded-theory`](./grounded-theory/SKILL.md)** (*Universal*): Investigative sensemaking and Grounded Theory (Glaser & Strauss) — anomaly detection, *in-vivo* language coding, contradiction mapping, open/axial/selective coding, and iterative hypothesis testing via the Constant Comparative Method.
 - **[`zambrow`](./zambrow/README.md)** (*macOS / Universal*): Local assistant for Zambrów — municipal news, events calendar, ads, company directory, and Kino MOK cinema showtimes with automated Filmweb/IMDb ratings. Includes local PC CLI integration (`zambrow_tool.py`) and a Google Agent Skills package for Gemini Web GUI (`web/zambrow.zip`).
 
 ## Non-Obvious Behaviors
