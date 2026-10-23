@@ -324,6 +324,28 @@ python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py pup news --json
 
 ---
 
+### 11. Centralny Rejestr Beneficjentów Rzeczywistych (`crbr`)
+
+Demaskuje rzeczywistych beneficjentów (osoby fizyczne sprawujące bezpośrednią lub pośrednią kontrolę nad spółkami) oraz powiązania kapitałowe z oficjalnego API Ministerstwa Finansów (`crbr.podatki.gov.pl`). Kluczowe narzędzie dla CSI Seweryna do rozplątywania układów właścicielskich i sprawdzania, kto faktycznie stoi za zambrowskimi inwestycjami i spółkami komunalnymi:
+
+```bash
+# Sprawdź beneficjentów rzeczywistych spółki po KRS lub NIP
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py crbr 0001075599
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py crbr 7231638060 --nip
+
+# Wyszukaj podmiot po nazwie
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py crbr "SZPITAL POWIATOWY W ZAMBROWIE"
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py crbr "KULESZA DEVELOPMENT"
+
+# Prześwietl wszystkie spółki powiązane z daną osobą (po numerze PESEL)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py crbr 70121413476 --pesel
+
+# Wyjście w formacie JSON dla pipeline'ów OSINT
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py crbr 0001075599 --json
+```
+
+---
+
 ## Generative UI / Interactive Visual Event Calendar (Generative UI Widget)
 
 When the user asks for a visual, interactive calendar or wants to explore upcoming events/movies interactively:

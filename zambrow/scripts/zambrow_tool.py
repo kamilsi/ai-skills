@@ -1923,6 +1923,256 @@ def fetch_krs(krs_number: str, register: str = "P") -> Dict[str, Any]:
         "rada_nadzorcza": rada_nadzorcza
     }
 
+CRBR_API_URL = "https://crbr.podatki.gov.pl/adcrbr/api"
+
+def fetch_crbr(query: str, mode: str = "auto") -> Dict[str, Any]:
+    """Queries official Ministry of Finance CRBR API for beneficial owners or company holdings."""
+    clean = re.sub(r"\D", "", query)
+    today = datetime.date.today().isoformat()
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Content-Type": "application/json;charset=UTF-8",
+        "Referer": "https://crbr.podatki.gov.pl/adcrbr/"
+    }
+
+    if mode == "auto":
+        if re.match(r"^\d{11}$", clean):
+            mode = "pesel"
+        elif clean.startswith("00") and len(clean) <= 10:
+            mode = "krs"
+        elif re.match(r"^\d{10}$", clean):
+            mode = "nip"
+        elif re.match(r"^\d{1,9}$", clean):
+            mode = "krs"
+        else:
+            mode = "name"
+
+    if mode in ("nip", "krs", "name"):
+        krs_val = clean.zfill(10) if mode == "krs" else None
+        nip_val = clean if mode == "nip" else None
+        nazwa_val = query.strip() if mode == "name" else None
+        payload = {
+            "kontekstWyszukania": 1,
+            "krs": krs_val,
+            "nip": nip_val,
+            "nazwaSpolki": nazwa_val,
+            "dataOd": today,
+            "dataDo": today
+        }
+        url = f"{CRBR_API_URL}/wyszukajSpolke"
+    else:  # pesel
+        payload = {
+            "kontekstWyszukania": 2,
+            "pesel": clean,
+            "dataOd": today,
+            "dataDo": today
+        }
+        url = f"{CRBR_API_URL}/wyszukajBeneficjenta"
+
+    try:
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Fallback if 10-digit number failed as NIP, try as KRS
+        if mode == "nip" and e.code == 400:
+            try:
+                payload["nip"] = None
+                payload["krs"] = clean.zfill(10)
+                req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except Exception:
+                return {"error": f"Błąd API CRBR ({e.code}): {e.reason}"}
+        else:
+            return {"error": f"Błąd API CRBR ({e.code}): {e.reason}"}
+    except Exception as e:
+        return {"error": f"Błąd połączenia z API CRBR: {e}"}
+
+    result: Dict[str, Any] = {
+        "query": query,
+        "mode": mode,
+        "timestamp": today,
+        "spolki": [],
+        "beneficjenci": []
+    }
+
+    # Parse company search results
+    if "informacjeOSpolkachIBeneficjentach" in data:
+        for item in (data.get("informacjeOSpolkachIBeneficjentach") or []):
+            sp = item.get("spolka", {}) or {}
+            adr = sp.get("adresSiedziby", {}) or {}
+
+            beneficjenci = []
+            for b in (item.get("listaBeneficjentow") or []):
+                uprawnienia = []
+                for u in (b.get("informacjeOUdzialeLubUprawnieniach") or []):
+                    u_desc = u.get("rodzajWlasnosciOpis") or "udziałowiec/uprawniony"
+                    ilosc = u.get("ilosc")
+                    jm = u.get("jednostkaMiaryUdzialuOpis") or ""
+                    val_str = f"{ilosc} {jm}".strip() if ilosc else ""
+                    przyw = [p.get("opis") for p in (u.get("rodzajUprzywilejowania") or []) if isinstance(p, dict) and p.get("opis") and p.get("opis") != "brak"]
+                    uprawnienia.append({
+                        "opis": u_desc,
+                        "wielkosc": val_str,
+                        "przywileje": przyw
+                    })
+                drugie = b.get('imieDrugieINastepne') or ""
+                imie_pelne = f"{b.get('imiePierwsze', '')} {drugie}".strip()
+                ob_list = [k.get("nazwa", "") for k in (b.get("obywatelstwo") or []) if isinstance(k, dict) and k.get("nazwa")]
+                beneficjenci.append({
+                    "imie": imie_pelne,
+                    "nazwisko": b.get("nazwisko", ""),
+                    "pesel": b.get("pesel", ""),
+                    "data_urodzenia": b.get("dataUrodzenia", ""),
+                    "obywatelstwo": ", ".join(ob_list),
+                    "kraj_zamieszkania": (b.get("panstwoZamieszkania") or {}).get("nazwa", ""),
+                    "uprawnienia": uprawnienia
+                })
+
+            zglaszajacy = []
+            for z in (item.get("listaZglaszajacych") or []):
+                funkcje = ", ".join(f.get("opis", "") for f in (z.get("funkcjeZglaszajacego") or []) if isinstance(f, dict) and f.get("opis"))
+                z_drugie = z.get('imieDrugieINastepne') or ""
+                z_imie = f"{z.get('imiePierwsze', '')} {z_drugie}".strip()
+                zglaszajacy.append({
+                    "imie": z_imie,
+                    "nazwisko": z.get("nazwisko", ""),
+                    "pesel": z.get("pesel", ""),
+                    "funkcja": funkcje
+                })
+
+            rozbieznosci = item.get("listaInformacjiORozbieznosciach", []) or []
+
+            result["spolki"].append({
+                "nazwa": sp.get("pelnaNazwa", ""),
+                "nip": sp.get("nip", ""),
+                "krs": sp.get("krs", ""),
+                "forma_prawna": sp.get("formaOrganizacyjnaOpis", ""),
+                "adres": {
+                    "ulica": adr.get("ulica", ""),
+                    "nrDomu": adr.get("nrDomu", ""),
+                    "nrLokalu": adr.get("nrLokalu", ""),
+                    "kod": adr.get("kodPocztowy", ""),
+                    "miejscowosc": adr.get("miejscowosc", ""),
+                    "powiat": adr.get("powiat", ""),
+                    "wojewodztwo": adr.get("wojewodztwo", "")
+                },
+                "beneficjenci": beneficjenci,
+                "zglaszajacy": zglaszajacy,
+                "rozbieznosci": rozbieznosci
+            })
+
+    # Parse beneficiary search results (by PESEL)
+    if "informacjeOBeneficjentach" in data:
+        for item in data.get("informacjeOBeneficjentach", []):
+            b = item.get("beneficjent", {})
+            sp = item.get("daneSpolki", {})
+            adr = sp.get("adresSiedziby", {}) or {}
+
+            uprawnienia = []
+            for u in b.get("informacjeOUdzialeLubUprawnieniach", []):
+                u_desc = u.get("rodzajWlasnosciOpis") or "udziałowiec/uprawniony"
+                ilosc = u.get("ilosc")
+                jm = u.get("jednostkaMiaryUdzialuOpis") or ""
+                val_str = f"{ilosc} {jm}".strip() if ilosc else ""
+                uprawnienia.append({
+                    "opis": u_desc,
+                    "wielkosc": val_str
+                })
+
+            b_drugie = b.get('imieDrugieINastepne') or ""
+            b_imie = f"{b.get('imiePierwsze', '')} {b_drugie}".strip()
+            result["beneficjenci"].append({
+                "beneficjent": {
+                    "imie": b_imie,
+                    "nazwisko": b.get("nazwisko", ""),
+                    "pesel": b.get("pesel", ""),
+                    "obywatelstwo": ", ".join(k.get("nazwa", "") for k in b.get("obywatelstwo", []) if k.get("nazwa")),
+                    "kraj_zamieszkania": (b.get("panstwoZamieszkania") or {}).get("nazwa", ""),
+                    "uprawnienia": uprawnienia
+                },
+                "spolka": {
+                    "nazwa": sp.get("pelnaNazwa", ""),
+                    "nip": sp.get("nip", ""),
+                    "krs": sp.get("krs", ""),
+                    "forma_prawna": sp.get("formaOrganizacyjnaOpis", ""),
+                    "adres": f"ul. {adr.get('ulica', '')} {adr.get('nrDomu', '')}, {adr.get('miejscowosc', '')}".strip()
+                }
+            })
+
+    return result
+
+def display_crbr(data: Dict[str, Any]) -> None:
+    """Formats CRBR search results in a clean, human-readable terminal output."""
+    if "error" in data:
+        print(f"\n❌ Błąd CRBR: {data['error']}\n")
+        return
+
+    spolki = data.get("spolki", [])
+    beneficjenci = data.get("beneficjenci", [])
+
+    if not spolki and not beneficjenci:
+        print(f"\nℹ️ Nie znaleziono wpisów w Centralnym Rejestrze Beneficjentów Rzeczywistych (CRBR) dla: '{data.get('query', '')}'\n")
+        return
+
+    print("\n" + "=" * 80)
+    print("🏛️ CENTRALNY REJESTR BENEFICJENTÓW RZECZYWISTYCH (CRBR — Ministerstwo Finansów)")
+    print("=" * 80)
+
+    if spolki:
+        for idx, sp in enumerate(spolki, 1):
+            if idx > 1:
+                print("\n" + "-" * 80)
+            print(f"\n🏢 {sp['nazwa']}")
+            print(f"KRS: {sp['krs']} | NIP: {sp['nip']} | Forma: {sp['forma_prawna']}")
+            adr = sp['adres']
+            lokal_str = f"/{adr['nrLokalu']}" if adr.get('nrLokalu') else ""
+            print(f"📍 Siedziba: ul. {adr['ulica']} {adr['nrDomu']}{lokal_str}, {adr['kod']} {adr['miejscowosc']}")
+
+            b_list = sp.get("beneficjenci", [])
+            print(f"\n👑 Beneficjenci Rzeczywiści ({len(b_list)} os.):")
+            for b_idx, b in enumerate(b_list, 1):
+                pesel_str = f" | PESEL: {b['pesel']}" if b.get('pesel') else ""
+                print(f"  {b_idx}. {b['imie']} {b['nazwisko']}{pesel_str}")
+                if b.get('obywatelstwo'):
+                    print(f"     Obywatelstwo: {b['obywatelstwo']} | Kraj zamieszkania: {b.get('kraj_zamieszkania', '-')}")
+                for u in b.get("uprawnienia", []):
+                    w_str = f" ({u['wielkosc']})" if u.get('wielkosc') else ""
+                    print(f"     • Uprawnienia: {u['opis']}{w_str}")
+                    if u.get('przywileje'):
+                        print(f"       Przywileje: {', '.join(u['przywileje'])}")
+
+            z_list = sp.get("zglaszajacy", [])
+            if z_list:
+                print(f"\n✍️ Osoby zgłaszające (reprezentanci):")
+                for z in z_list:
+                    pesel_str = f" (PESEL: {z['pesel']})" if z.get('pesel') else ""
+                    print(f"  • {z['imie']} {z['nazwisko']}{pesel_str} — {z['funkcja']}")
+
+            rozb = sp.get("rozbieznosci", [])
+            if rozb:
+                print(f"\n⚠️ Zgłoszone rozbieżności ({len(rozb)}):")
+                for r in rozb:
+                    print(f"  • {r}")
+
+    elif beneficjenci:
+        b_first = beneficjenci[0].get("beneficjent", {})
+        print(f"\n👑 Beneficjent: {b_first.get('imie')} {b_first.get('nazwisko')} (PESEL: {b_first.get('pesel')})")
+        print(f"Obywatelstwo: {b_first.get('obywatelstwo')} | Kraj zamieszkania: {b_first.get('kraj_zamieszkania')}")
+        print(f"\nPowiązane podmioty gospodarcze w rejestrze CRBR ({len(beneficjenci)} spółek):")
+        for idx, item in enumerate(beneficjenci, 1):
+            sp = item.get("spolka", {})
+            u_list = item.get("beneficjent", {}).get("uprawnienia", [])
+            u_str = ", ".join(f"{u['opis']} ({u['wielkosc']})" if u.get('wielkosc') else u['opis'] for u in u_list)
+            print(f"\n  {idx}. 🏢 {sp['nazwa']}")
+            print(f"     KRS: {sp['krs']} | NIP: {sp['nip']}")
+            print(f"     Siedziba: {sp['adres']}")
+            if u_str:
+                print(f"     Uprawnienia: {u_str}")
+
+    print("\n" + "=" * 80 + "\n")
+
 def search_bip(query: str = "", target: str = "all", section: str = "wszystkie", limit: int = 25) -> List[Dict[str, Any]]:
     """Searches Biuletyn Informacji Publicznej (BIP) of Powiat Zambrowski (Gov.pl) and Miasto Zambrów."""
     results = []
@@ -2394,6 +2644,15 @@ def main():
     krs_p.add_argument("krs", help="Numer KRS spółki (np. 0000130730)")
     krs_p.add_argument("-r", "--rejestr", choices=["P", "S"], default="P", help="Rejestr: P (Przedsiębiorcy) lub S (Stowarzyszenia)")
     krs_p.add_argument("--json", action="store_true", help="Wyjście w formacie JSON")
+
+    # crbr (Centralny Rejestr Beneficjentów Rzeczywistych — Ministerstwo Finansów)
+    crbr_p = subparsers.add_parser("crbr", help="Centralny Rejestr Beneficjentów Rzeczywistych (CRBR — Ministerstwo Finansów)")
+    crbr_p.add_argument("query", help="Numer NIP, KRS, PESEL lub nazwa spółki")
+    crbr_p.add_argument("--krs", action="store_true", help="Wymuś wyszukiwanie po numerze KRS")
+    crbr_p.add_argument("--nip", action="store_true", help="Wymuś wyszukiwanie po numerze NIP")
+    crbr_p.add_argument("--pesel", action="store_true", help="Wymuś wyszukiwanie powiązań beneficjenta po numerze PESEL")
+    crbr_p.add_argument("--name", action="store_true", help="Wymuś wyszukiwanie podmiotu po nazwie")
+    crbr_p.add_argument("--json", action="store_true", help="Wyjście w formacie JSON")
 
     # bip (OSINT / Samorząd)
     bip_p = subparsers.add_parser("bip", help="Przeszukaj Biuletyn Informacji Publicznej (Powiat Zambrowski Gov.pl / Miasto Zambrów)")
@@ -2974,6 +3233,22 @@ def main():
                 for rn in data['rada_nadzorcza']:
                     print(f"  • {rn['imie']} {rn['nazwisko']}")
             print()
+
+    elif args.command == "crbr":
+        mode = "auto"
+        if args.krs:
+            mode = "krs"
+        elif args.nip:
+            mode = "nip"
+        elif args.pesel:
+            mode = "pesel"
+        elif args.name:
+            mode = "name"
+        data = fetch_crbr(args.query, mode=mode)
+        if args.json:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+        else:
+            display_crbr(data)
 
     elif args.command == "bip":
         items = search_bip(query=args.query, target=args.target, section=args.section, limit=args.limit)
