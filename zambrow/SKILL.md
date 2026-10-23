@@ -3,11 +3,12 @@ name: zambrow
 description: >-
   Search, extract contacts, and browse local services, companies, classifieds,
   forum discussions, local news, municipal events calendar, cinema showtimes,
-  labor market (PUP), and GUS BDL macroeconomic statistics in Zambrów.
+  labor market (PUP), GUS BDL statistics, CRBR corporate beneficial ownership,
+  and official GUGiK RCN property transaction deeds in Zambrów.
   Use whenever the user asks about Zambrów: local news, events, concerts, cinema repertory,
   contractors, repair services, classifieds, municipal affairs, unemployment, wages,
-  or demographics (e.g. "co słychać w Zambrowie", "imprezy Zambrów", "kino Zambrów",
-  "repertuar kina", "ogłoszenia Zambrów", "forum Zambrów", "bezrobocie Zambrów", "GUS Zambrów").
+  demographics, real estate transaction prices, or company beneficial owners (e.g. "co słychać w Zambrowie",
+  "ceny mieszkań Zambrów", "rejestr cen nieruchomości", "akty notarialne", "kto jest właścicielem").
 ---
 
 # Zambrów Local News, Services, Community, Events & Cinema Skill
@@ -342,6 +343,34 @@ python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py crbr 70121413476 --pese
 
 # Wyjście w formacie JSON dla pipeline'ów OSINT
 python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py crbr 0001075599 --json
+```
+
+---
+
+### 12. Rejestr Cen Nieruchomości — Akty Notarialne (`rcn`)
+
+Odpytuje oficjalny Rejestr Cen Nieruchomości (RCiWN / GUGiK) poprzez usługę WFS (`https://mapy.geoportal.gov.pl/wss/service/rcn`). Dostarcza twardych, zweryfikowanych danych o rzeczywistych transakcjach kupna-sprzedaży (akty notarialne, ceny brutto, metraże, kondygnacje, podział na rynek pierwotny deweloperski i wtórny) z terenu miasta i powiatu zambrowskiego:
+
+```bash
+# Pobierz ostatnie transakcje lokali mieszkalnych w Zambrowie (zestawienie statystyczne i lista aktów)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py rcn lokale --area miasto -m 50
+
+# Szybkie statystyki cenowe (mediana, średnia, kwartyle, podział na rynek pierwotny/wtórny, dynamika roczna)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py rcn stats --area miasto
+
+# Filtrowanie według lat transakcji
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py rcn lokale --area miasto --min-rok 2025 --max-rok 2026
+
+# Transakcje dla innych obszarów powiatu (presety: miasto, powiat, szumowo, rutki, kolaki) lub własny BBOX
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py rcn lokale --area powiat -m 100
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py rcn dzialki --area miasto -m 50
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py rcn budynki --area szumowo -m 50
+
+# Eksport oficjalnych aktów notarialnych do CSV (dla Agenta Statystyka do wyliczania spreadu negocjacyjnego)
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py rcn lokale --area miasto -m 200 --export-csv ~/zambrow-vault/data/nieruchomosci_transakcje.csv
+
+# Eksport w formacie JSON
+python3 ~/.gemini/skills/zambrow/scripts/zambrow_tool.py rcn lokale --area miasto --json
 ```
 
 ---

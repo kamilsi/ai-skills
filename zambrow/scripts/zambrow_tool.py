@@ -2173,6 +2173,342 @@ def display_crbr(data: Dict[str, Any]) -> None:
 
     print("\n" + "=" * 80 + "\n")
 
+RCN_WFS_URL = "https://mapy.geoportal.gov.pl/wss/service/rcn"
+
+RCN_PRESET_AREAS = {
+    "miasto": "52.95,22.18,53.03,22.30",
+    "powiat": "52.82,22.00,53.15,22.45",
+    "szumowo": "52.88,22.02,52.98,22.18",
+    "rutki": "53.05,22.35,53.15,22.50",
+    "kolaki": "52.98,22.35,53.08,22.45"
+}
+
+def fetch_rcn_transactions(
+    layer: str = "lokale",
+    area: str = "miasto",
+    bbox: Optional[str] = None,
+    limit: int = 100,
+    year: Optional[int] = None,
+    clean_only: bool = True
+) -> List[Dict[str, Any]]:
+    """
+    Fetches real estate transaction records directly from GUGiK RCN WFS service.
+    Supported layers: 'lokale' (apartments), 'dzialki' (plots/land), 'budynki' (houses/buildings).
+    """
+    bbox_str = bbox if bbox else RCN_PRESET_AREAS.get(area, RCN_PRESET_AREAS["miasto"])
+    layer_map = {
+        "lokale": "ms:lokale",
+        "dzialki": "ms:dzialki",
+        "budynki": "ms:budynki"
+    }
+    wfs_type = layer_map.get(layer, "ms:lokale")
+
+    transactions: List[Dict[str, Any]] = []
+    page_size = min(100, limit)
+    start_index = 0
+
+    ns = {
+        "ms": "http://mapserver.gis.umn.edu/mapserver",
+        "gml": "http://www.opengis.net/gml/3.2",
+        "wfs": "http://www.opengis.net/wfs/2.0"
+    }
+
+    while len(transactions) < limit:
+        batch_limit = min(page_size, limit - len(transactions))
+        query_params = {
+            "Service": "WFS",
+            "Version": "2.0.0",
+            "Request": "GetFeature",
+            "TypeName": wfs_type,
+            "BBOX": f"{bbox_str},urn:ogc:def:crs:EPSG::4326",
+            "Count": str(batch_limit),
+            "STARTINDEX": str(start_index)
+        }
+        url = f"{RCN_WFS_URL}?{urllib.parse.urlencode(query_params)}"
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                xml_data = resp.read()
+            root = ET.fromstring(xml_data)
+        except Exception as e:
+            sys.stderr.write(f"⚠️ Błąd pobierania danych z RCN WFS ({wfs_type}): {e}\n")
+            break
+
+        features = root.findall(f".//{wfs_type}", ns)
+        if not features:
+            break
+
+        for f in features:
+            data_dok = f.findtext(".//ms:DOK_DATA//gml:timePosition", default="", namespaces=ns)
+            rok_dok = data_dok[:4] if len(data_dok) >= 4 else ""
+            if year and rok_dok != str(year):
+                continue
+
+            trans_typ = f.findtext("ms:TRAN_RODZAJ_TRANS", default="", namespaces=ns)
+            udzial = f.findtext("ms:NIER_UDZIAL", default="", namespaces=ns)
+            notariusz = f.findtext("ms:DOK_TWORCA", default="", namespaces=ns)
+            ozn_aktu = f.findtext("ms:DOK_OZNACZENIE", default="", namespaces=ns)
+            teryt = f.findtext("ms:TERYT", default="", namespaces=ns)
+            cena_tran = f.findtext("ms:TRAN_CENA_BRUTTO", default="", namespaces=ns)
+
+            # Filtering for clean market transactions if clean_only
+            if clean_only:
+                if udzial and udzial not in ("1/1", "1"):
+                    continue
+                if trans_typ and trans_typ != "wolnyRynek":
+                    continue
+
+            tx_record: Dict[str, Any] = {
+                "warstwa": layer,
+                "data": data_dok,
+                "rok": rok_dok,
+                "cena": 0.0,
+                "powierzchnia_m2": 0.0,
+                "cena_m2": 0.0,
+                "rodzaj_rynku": "",
+                "typ_transakcji": trans_typ,
+                "udzial": udzial,
+                "funkcja": "",
+                "pietro": None,
+                "liczba_izb": None,
+                "id_obiektu": "",
+                "notariusz": notariusz,
+                "oznaczenie_aktu": ozn_aktu,
+                "teryt": teryt
+            }
+
+            if layer == "lokale":
+                cena_lok = f.findtext("ms:LOK_CENA_BRUTTO", default="", namespaces=ns)
+                pow_str = f.findtext("ms:LOK_POW_UZYT", default="", namespaces=ns)
+                rynek = f.findtext("ms:TRAN_RODZAJ_RYNKU", default="", namespaces=ns) or "brak_danych"
+                funkcja = f.findtext("ms:LOK_FUNKCJA", default="", namespaces=ns)
+                pietro_str = f.findtext("ms:LOK_NR_KOND", default="", namespaces=ns)
+                izby_str = f.findtext("ms:LOK_LICZBA_IZB", default="", namespaces=ns)
+                lok_id = f.findtext("ms:LOK_ID_LOKALU", default="", namespaces=ns)
+
+                try:
+                    c_val = float(cena_lok) if (cena_lok and float(cena_lok) > 0) else (float(cena_tran) if cena_tran else 0.0)
+                    p_val = float(pow_str) if pow_str else 0.0
+                    if clean_only and (c_val <= 0 or p_val < 10 or p_val > 350):
+                        continue
+                    c_m2 = round(c_val / p_val, 2) if (p_val > 0 and c_val > 0) else 0.0
+                    if clean_only and (c_m2 < 1000 or c_m2 > 25000):
+                        continue
+                    tx_record.update({
+                        "cena": c_val,
+                        "powierzchnia_m2": p_val,
+                        "cena_m2": c_m2,
+                        "rodzaj_rynku": rynek,
+                        "funkcja": funkcja,
+                        "pietro": int(pietro_str) if pietro_str and pietro_str.isdigit() else None,
+                        "liczba_izb": int(izby_str) if izby_str and izby_str.isdigit() else None,
+                        "id_obiektu": lok_id
+                    })
+                    transactions.append(tx_record)
+                except ValueError:
+                    continue
+
+            elif layer == "dzialki":
+                pow_ha = f.findtext("ms:DZI_POW_EWID", default="", namespaces=ns)
+                przezn = f.findtext("ms:DZI_PRZEZN_WMPZP", default="", namespaces=ns)
+                dzi_id = f.findtext("ms:DZI_ID_DZIALKI", default="", namespaces=ns)
+                try:
+                    c_val = float(cena_tran) if cena_tran else 0.0
+                    p_ha_val = float(pow_ha) if pow_ha else 0.0
+                    p_m2_val = round(p_ha_val * 10000.0, 2)
+                    if clean_only and (c_val <= 1000 or p_m2_val < 50):
+                        continue
+                    c_m2 = round(c_val / p_m2_val, 2) if (p_m2_val > 0 and c_val > 0) else 0.0
+                    if clean_only and (c_m2 < 1.0 or c_m2 > 5000.0):
+                        continue
+                    tx_record.update({
+                        "cena": c_val,
+                        "powierzchnia_m2": p_m2_val,
+                        "cena_m2": c_m2,
+                        "funkcja": przezn,
+                        "id_obiektu": dzi_id
+                    })
+                    transactions.append(tx_record)
+                except ValueError:
+                    continue
+
+            elif layer == "budynki":
+                pow_gruntu = f.findtext("ms:NIER_POW_GRUNTU", default="", namespaces=ns)
+                rodzaj_bud = f.findtext("ms:BUD_RODZAJ", default="", namespaces=ns)
+                bud_id = f.findtext("ms:BUD_ID_BUDYNKU", default="", namespaces=ns)
+                try:
+                    c_val = float(cena_tran) if cena_tran else 0.0
+                    p_ha_val = float(pow_gruntu) if pow_gruntu else 0.0
+                    p_m2_val = round(p_ha_val * 10000.0, 2)
+                    tx_record.update({
+                        "cena": c_val,
+                        "powierzchnia_m2": p_m2_val,
+                        "funkcja": rodzaj_bud,
+                        "id_obiektu": bud_id
+                    })
+                    transactions.append(tx_record)
+                except ValueError:
+                    continue
+
+        if len(features) < page_size:
+            break
+        start_index += len(features)
+
+    return transactions
+
+def get_rcn_statistics(transactions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Computes distribution statistics, medians, and market breakdown from transaction records."""
+    if not transactions:
+        return {"count": 0}
+
+    prices_m2 = [t["cena_m2"] for t in transactions if t.get("cena_m2", 0) > 0]
+    prices_m2.sort()
+
+    total_count = len(transactions)
+    valid_count = len(prices_m2)
+
+    if valid_count == 0:
+        return {"count": total_count, "with_price": 0}
+
+    mediana = prices_m2[valid_count // 2]
+    srednia = round(sum(prices_m2) / valid_count, 2)
+    min_c = prices_m2[0]
+    max_c = prices_m2[-1]
+    q1 = prices_m2[valid_count // 4]
+    q3 = prices_m2[(3 * valid_count) // 4]
+
+    # Breakdown by year
+    by_year: Dict[str, List[float]] = {}
+    for t in transactions:
+        rok = t.get("rok") or "brak"
+        c = t.get("cena_m2", 0)
+        if c > 0:
+            by_year.setdefault(rok, []).append(c)
+
+    rok_stats = {}
+    for r, vals in sorted(by_year.items()):
+        vals.sort()
+        rok_stats[r] = {
+            "count": len(vals),
+            "mediana": round(vals[len(vals) // 2], 2),
+            "srednia": round(sum(vals) / len(vals), 2)
+        }
+
+    # Breakdown by market (rynek pierwotny vs wtorny)
+    by_market: Dict[str, List[float]] = {}
+    for t in transactions:
+        mkt = t.get("rodzaj_rynku") or "brak_danych"
+        c = t.get("cena_m2", 0)
+        if c > 0:
+            by_market.setdefault(mkt, []).append(c)
+
+    mkt_stats = {}
+    for m, vals in sorted(by_market.items()):
+        vals.sort()
+        mkt_stats[m] = {
+            "count": len(vals),
+            "mediana": round(vals[len(vals) // 2], 2),
+            "srednia": round(sum(vals) / len(vals), 2)
+        }
+
+    return {
+        "count": total_count,
+        "with_price": valid_count,
+        "mediana_cena_m2": mediana,
+        "srednia_cena_m2": srednia,
+        "min_cena_m2": min_c,
+        "max_cena_m2": max_c,
+        "q1_cena_m2": q1,
+        "q3_cena_m2": q3,
+        "lata": rok_stats,
+        "rynki": mkt_stats
+    }
+
+def display_rcn_transactions(
+    transactions: List[Dict[str, Any]],
+    stats: Optional[Dict[str, Any]] = None,
+    limit: int = 15
+) -> None:
+    """Formats RCN transaction records and market statistics for terminal display."""
+    if not transactions:
+        print("\nℹ️ Brak transakcji w rejestrze RCN dla podanych kryteriów.\n")
+        return
+
+    print("\n" + "=" * 90)
+    print("📑 REJESTR CEN NIERUCHOMOŚCI (RCN / GUGiK — Oficjalne Akty Notarialne)")
+    print("=" * 90)
+
+    if stats and stats.get("with_price", 0) > 0:
+        print(f"\n📊 STATYSTYKA TRANSAKCYJNA (Próba: {stats['count']} transakcji):")
+        print(f"  • Mediana ceny za m²:    {stats['mediana_cena_m2']:.2f} zł/m²")
+        print(f"  • Średnia ceny za m²:    {stats['srednia_cena_m2']:.2f} zł/m²")
+        print(f"  • Rozstęp cen (Min-Max): {stats['min_cena_m2']:.2f} — {stats['max_cena_m2']:.2f} zł/m²")
+        print(f"  • Kwartyle (Q1 - Q3):     {stats['q1_cena_m2']:.2f} — {stats['q3_cena_m2']:.2f} zł/m²")
+
+        if stats.get("lata"):
+            print("\n📅 Dynamika roczna transakcji:")
+            print("  Rok    | Liczba transakcji | Mediana [zł/m²] | Średnia [zł/m²]")
+            print("  -------+-------------------+-----------------+----------------")
+            for r, s_r in stats["lata"].items():
+                print(f"  {r:<6} | {s_r['count']:<17} | {s_r['mediana']:<15.2f} | {s_r['srednia']:<14.2f}")
+
+        if stats.get("rynki"):
+            print("\n🏗️ Podział na segmenty rynku:")
+            for m, s_m in stats["rynki"].items():
+                m_label = "Rynek Pierwotny (Deweloper)" if "Pierwotny" in m else ("Rynek Wtórny" if "Wtorny" in m else m)
+                print(f"  • {m_label}: {s_m['count']} transakcji | Mediana: {s_m['mediana']:.2f} zł/m² | Średnia: {s_m['srednia']:.2f} zł/m²")
+
+    print(f"\n📋 Ostatnie transakcje (wyświetlono {min(len(transactions), limit)} z {len(transactions)}):")
+    print("------------------------------------------------------------------------------------------")
+    for idx, t in enumerate(transactions[:limit], 1):
+        d_str = f"[{t['data']}]" if t.get("data") else "[Data n/a]"
+        c_str = f"{t['cena']:,.0f} zł".replace(",", " ") if t.get("cena") else "Cena n/a"
+        cm2_str = f"{t['cena_m2']:,.2f} zł/m²".replace(",", " ") if t.get("cena_m2") else "-"
+        p_str = f"{t['powierzchnia_m2']:.2f} m²" if t.get("powierzchnia_m2") else "-"
+        mkt_str = f" | {t['rodzaj_rynku']}" if t.get("rodzaj_rynku") else ""
+        kond_str = f" | p.{t['pietro']}" if t.get("pietro") is not None else ""
+        izb_str = f" | {t['liczba_izb']} pok." if t.get("liczba_izb") else ""
+        fn_str = f" | {t['funkcja']}" if t.get("funkcja") and t['funkcja'] != "mieszkalna" else ""
+
+        print(f"{idx:>2}. {d_str} {p_str:>10} | {cm2_str:>16} | łączna: {c_str:>12}{mkt_str}{kond_str}{izb_str}{fn_str}")
+        print(f"    ID: {t['id_obiektu']} | Notariusz: {t['notariusz']}")
+
+    print("\n" + "=" * 90 + "\n")
+
+def export_rcn_csv(transactions: List[Dict[str, Any]], filepath: str) -> bool:
+    """Exports transaction records to CSV file for R modeling and analysis."""
+    if not transactions:
+        return False
+    pathlib.Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "warstwa", "data_transakcji", "rok", "cena_calkowita_pln",
+        "powierzchnia_m2", "cena_m2_pln", "rodzaj_rynku",
+        "liczba_izb", "kondygnacja_pietro", "funkcja_przeznaczenie",
+        "id_obiektu", "notariusz", "oznaczenie_aktu", "teryt"
+    ]
+    with open(filepath, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for t in transactions:
+            writer.writerow({
+                "warstwa": t.get("warstwa", ""),
+                "data_transakcji": t.get("data", ""),
+                "rok": t.get("rok", ""),
+                "cena_calkowita_pln": t.get("cena", ""),
+                "powierzchnia_m2": t.get("powierzchnia_m2", ""),
+                "cena_m2_pln": t.get("cena_m2", ""),
+                "rodzaj_rynku": t.get("rodzaj_rynku", ""),
+                "liczba_izb": t.get("liczba_izb", ""),
+                "kondygnacja_pietro": t.get("pietro", ""),
+                "funkcja_przeznaczenie": t.get("funkcja", ""),
+                "id_obiektu": t.get("id_obiektu", ""),
+                "notariusz": t.get("notariusz", ""),
+                "oznaczenie_aktu": t.get("oznaczenie_aktu", ""),
+                "teryt": t.get("teryt", "")
+            })
+    return True
+
 def search_bip(query: str = "", target: str = "all", section: str = "wszystkie", limit: int = 25) -> List[Dict[str, Any]]:
     """Searches Biuletyn Informacji Publicznej (BIP) of Powiat Zambrowski (Gov.pl) and Miasto Zambrów."""
     results = []
@@ -2653,6 +2989,19 @@ def main():
     crbr_p.add_argument("--pesel", action="store_true", help="Wymuś wyszukiwanie powiązań beneficjenta po numerze PESEL")
     crbr_p.add_argument("--name", action="store_true", help="Wymuś wyszukiwanie podmiotu po nazwie")
     crbr_p.add_argument("--json", action="store_true", help="Wyjście w formacie JSON")
+
+    # rcn (Rejestr Cen Nieruchomości — GUGiK RCN WFS)
+    rcn_p = subparsers.add_parser("rcn", help="Rejestr Cen Nieruchomości (GUGiK RCN WFS — rzeczywiste akty notarialne)")
+    rcn_p.add_argument("layer", nargs="?", choices=["lokale", "dzialki", "budynki", "stats"], default="lokale",
+                       help="Warstwa: lokale (mieszkania), dzialki (grunty), budynki (domy) lub stats")
+    rcn_p.add_argument("-a", "--area", choices=list(RCN_PRESET_AREAS.keys()), default="miasto",
+                       help="Obszar predefiniowany: miasto (Zambrów), powiat, szumowo, rutki, kolaki")
+    rcn_p.add_argument("--bbox", help="Własny BBOX (format: min_lat,min_lon,max_lat,max_lon)")
+    rcn_p.add_argument("-m", "--limit", type=int, default=100, help="Maksymalna liczba transakcji (domyślnie 100)")
+    rcn_p.add_argument("-y", "--year", type=int, help="Filtruj transakcje po roku (np. 2025, 2026)")
+    rcn_p.add_argument("--all-raw", action="store_true", help="Pobierz surowe dane bez odrzucania udziałów ułamkowych i transakcji nierynkowych")
+    rcn_p.add_argument("--export-csv", dest="export_csv_path", help="Ścieżka do pliku wyjściowego CSV")
+    rcn_p.add_argument("--json", action="store_true", help="Wyjście w formacie JSON")
 
     # bip (OSINT / Samorząd)
     bip_p = subparsers.add_parser("bip", help="Przeszukaj Biuletyn Informacji Publicznej (Powiat Zambrowski Gov.pl / Miasto Zambrów)")
@@ -3249,6 +3598,40 @@ def main():
             print(json.dumps(data, indent=2, ensure_ascii=False))
         else:
             display_crbr(data)
+
+    elif args.command == "rcn":
+        target_layer = "lokale" if args.layer == "stats" else args.layer
+        clean_only = not args.all_raw
+        txs = fetch_rcn_transactions(
+            layer=target_layer,
+            area=args.area,
+            bbox=args.bbox,
+            limit=args.limit,
+            year=args.year,
+            clean_only=clean_only
+        )
+        stats = get_rcn_statistics(txs)
+
+        if args.export_csv_path:
+            ok = export_rcn_csv(txs, args.export_csv_path)
+            if ok:
+                print(f"✅ Wyeksportowano {len(txs)} transakcji RCN do pliku: {args.export_csv_path}")
+            else:
+                print(f"⚠️ Nie wyeksportowano danych — brak transakcji spełniających kryteria.")
+
+        if args.json:
+            out_data = {
+                "layer": target_layer,
+                "area": args.area,
+                "bbox": args.bbox or RCN_PRESET_AREAS.get(args.area),
+                "count": len(txs),
+                "statystyki": stats,
+                "transakcje": txs
+            }
+            print(json.dumps(out_data, indent=2, ensure_ascii=False))
+        else:
+            limit_display = 0 if args.layer == "stats" else 20
+            display_rcn_transactions(txs, stats=stats, limit=limit_display)
 
     elif args.command == "bip":
         items = search_bip(query=args.query, target=args.target, section=args.section, limit=args.limit)
